@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "entry": "src/index.tsx",
   "pvx": ">=0.0.1",
+  "os": ["linux"],
   "permissions": {
     "exec": ["firewall-cmd", "nft", "iptables", "iptables-save", "iptables-restore", "systemctl", "systemd-run", "asterisk", "who", "sh"],
     "fs": ["rw:/etc/systemd/system/", "rw:$PVX_HOME/modules/firewall/state/"]
