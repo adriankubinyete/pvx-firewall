@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { openSession } from "./home.ts";
+import { runSession } from "@pvx/testing";
 import { installStubs, type Stubs } from "./stubs.ts";
 
 const dir = join(import.meta.dir, "..");
@@ -24,7 +24,7 @@ afterEach(() => {
 
 test("status with no engine on the host: a clean error, exit 1, nothing run", async () => {
   setup([]);
-  const s = await openSession(dir);
+  const s = await runSession(dir);
   const r = await s.run("firewall status");
   expect(r.exit).toBe(1);
   expect(r.text).toContain("engine indisponível");
@@ -32,7 +32,7 @@ test("status with no engine on the host: a clean error, exit 1, nothing run", as
 });
 
 test("ip accept validates, dedupes, and keeps the 13 seeded base IPs (regression: the Python module lost them)", async () => {
-  const s = await openSession(dir);
+  const s = await runSession(dir);
   expect((await s.run("firewall ip accept 300.1.1.1")).exit).toBe(1);
   expect((await s.run("firewall ip accept 203.0.113.9,203.0.113.10 --comment fulano")).ok).toBe(true);
   expect((await s.run("firewall ip accept 203.0.113.9")).text).toContain("já estava");
@@ -44,7 +44,7 @@ test("ip accept validates, dedupes, and keeps the 13 seeded base IPs (regression
 });
 
 test("ip deny refuses the current SSH IP and any range that holds it", async () => {
-  const s = await openSession(dir);
+  const s = await runSession(dir);
   for (const v of ["203.0.113.7", "203.0.113.0/24", "0.0.0.0/0"]) {
     const r = await s.run(`firewall ip deny ${v}`);
     expect(r.exit).toBe(1);
@@ -56,13 +56,13 @@ test("ip deny refuses the current SSH IP and any range that holds it", async () 
 
 test("ip deny without SSH_CLIENT falls back to who -m", async () => {
   delete process.env.SSH_CLIENT;
-  const s = await openSession(dir);
+  const s = await runSession(dir);
   expect((await s.run("firewall ip deny 198.51.100.0/24")).ok).toBe(true);
   expect(stubs.calls()).toContain("who -m");
 });
 
 test("remove, trust-phonevox puts the base IPs back", async () => {
-  const s = await openSession(dir);
+  const s = await runSession(dir);
   expect((await s.run("firewall ip remove 186.233.122.92")).ok).toBe(true);
   expect((await s.run("firewall ip remove 186.233.122.92")).text).toContain("não estava");
   expect((await s.run("firewall ip trust-phonevox")).text).toContain("186.233.122.92");
@@ -70,7 +70,7 @@ test("remove, trust-phonevox puts the base IPs back", async () => {
 });
 
 test("ports: validation, comment, remove from either list", async () => {
-  const s = await openSession(dir);
+  const s = await runSession(dir);
   expect((await s.run("firewall port accept 99999")).exit).toBe(1);
   expect((await s.run("firewall port accept 8080/tcp --comment painel")).ok).toBe(true);
   expect((await s.run("firewall port list")).text).toContain("8080/tcp");
@@ -79,15 +79,15 @@ test("ports: validation, comment, remove from either list", async () => {
 });
 
 test("apply is destructive: without --yes it is refused (exit 2) and nothing runs", async () => {
-  const s = await openSession(dir);
+  const s = await runSession(dir);
   const r = await s.run("firewall apply");
   expect(r.exit).toBe(2);
   expect(stubs.calls().filter((c) => c.startsWith("nft -f"))).toEqual([]);
 });
 
 test("apply: failsafe first, revert scheduled before the load, confirm disarms; status says ATIVO", async () => {
-  const s = await openSession(dir);
-  const r = await s.run("firewall apply", true);
+  const s = await runSession(dir);
+  const r = await s.run("firewall apply", { confirmed: true });
   expect(r.exit).toBe(0);
   expect(r.text).toContain("failsafe 203.0.113.7");
   expect(r.text).toContain("firewall confirm");
@@ -110,17 +110,17 @@ test("apply: failsafe first, revert scheduled before the load, confirm disarms; 
 
 test("apply without a session IP aborts; --force goes ahead with no revert", async () => {
   delete process.env.SSH_CLIENT;
-  const s = await openSession(dir);
-  const r = await s.run("firewall apply", true);
+  const s = await runSession(dir);
+  const r = await s.run("firewall apply", { confirmed: true });
   expect(r.exit).toBe(1);
   expect(r.text).toContain("--force");
   expect(stubs.calls().some((c) => c.startsWith("nft -f"))).toBe(false);
-  expect((await s.run("firewall apply --force --no-rollback", true)).ok).toBe(true);
+  expect((await s.run("firewall apply --force --no-rollback", { confirmed: true })).ok).toBe(true);
   expect(stubs.calls().some((c) => c.startsWith("systemd-run"))).toBe(false);
 });
 
 test("check shows what an apply would add and remove", async () => {
-  const s = await openSession(dir);
+  const s = await runSession(dir);
   const t = (await s.run("firewall check")).text;
   expect(t).toContain("+ ip saddr 203.0.113.7 accept");
   expect(t).toContain("+ drop");
@@ -128,8 +128,8 @@ test("check shows what an apply would add and remove", async () => {
 
 test("trust-asterisk reviews, never writes on its own (not even with --yes), writes only with --accept", async () => {
   writeFileSync(join(stubs.dir, "asterisk.sip show peers"), "1000/1000   189.10.20.30   D  Yes  Yes   5060  OK (1 ms)\n1001/1001   192.168.0.5   D  Yes  Yes   5060  OK\n");
-  const s = await openSession(dir);
-  const review = await s.run("firewall ip trust-asterisk", true);
+  const s = await runSession(dir);
+  const review = await s.run("firewall ip trust-asterisk", { confirmed: true });
   expect(review.text).toContain("189.10.20.30");
   expect(review.text).toContain("1000");
   expect(review.text).not.toContain("192.168.0.5 ");
@@ -142,7 +142,7 @@ test("trust-asterisk reviews, never writes on its own (not even with --yes), wri
 });
 
 test("engine: set, show, reject unknown", async () => {
-  const s = await openSession(dir);
+  const s = await runSession(dir);
   expect((await s.run("firewall engine bogus")).exit).toBe(1);
   expect((await s.run("firewall engine iptables")).text).toContain("engine: iptables -> iptables");
   expect((await s.run("firewall engine")).text).toContain("iptables");
@@ -150,8 +150,8 @@ test("engine: set, show, reject unknown", async () => {
 });
 
 test("boot: dry-run prints the unit without writing; status reads systemctl", async () => {
-  const s = await openSession(dir);
-  const d = await s.run("firewall boot enable --dry-run", true);
+  const s = await runSession(dir);
+  const d = await s.run("firewall boot enable --dry-run", { confirmed: true });
   expect(d.text).toContain("ExecStart=/usr/local/bin/pvx firewall apply --yes --force --no-rollback");
   expect(stubs.calls().some((c) => c.startsWith("systemctl enable"))).toBe(false);
   expect((await s.run("firewall boot status")).text).toContain("desabilitado");

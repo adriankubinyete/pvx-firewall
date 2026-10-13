@@ -40,7 +40,7 @@ export const nftables: Engine = {
   id: "nftables",
   ...makeBoot("nftables"),
   render: rules,
-  async status(io: Io): Promise<EngineStatus> {
+  async status(io: Pick<Io, "exec" | "zone">): Promise<EngineStatus> {
     const v = await run(io.exec, "nft", ["--version"]);
     if (!ok(v)) return { available: false, reason: "nft não encontrado", active: false, rules: [] };
     const l = await run(io.exec, "nft", ["list", "table", "ip", "pvx"]);

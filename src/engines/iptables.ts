@@ -31,7 +31,7 @@ export const iptables: Engine = {
   id: "iptables",
   ...makeBoot("iptables"),
   render: rules,
-  async status(io: Io): Promise<EngineStatus> {
+  async status(io: Pick<Io, "exec" | "zone">): Promise<EngineStatus> {
     const v = await run(io.exec, "iptables", ["--version"]);
     if (!ok(v)) return { available: false, reason: "iptables não encontrado", active: false, rules: [] };
     const s = await run(io.exec, "iptables-save", ["-t", "filter"]);

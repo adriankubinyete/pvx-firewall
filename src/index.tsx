@@ -1,6 +1,6 @@
 // pvx module `firewall`. The factory only builds the object: every effect happens inside run(), prove() or a query.
 // All process execution goes through ctx.exec, so the trust review has nothing to warn about.
-import type { CommandCtx, CommandDef, ModuleFactory, ModuleFs, Proof } from "@pvx/sdk";
+import type { CommandCtx, CommandDef, ModuleFactory, Proof, ReadCtx } from "@pvx/sdk";
 import { networkInterfaces } from "node:os";
 import { applyFlow, detectSession } from "./apply.ts";
 import { collect, filterCandidates } from "./asterisk.ts";
@@ -99,32 +99,33 @@ const ownIps = (): string[] =>
   Object.values(networkInterfaces()).flatMap((l) => (l ?? []).filter((i) => i.family === "IPv4").map((i) => i.address));
 
 export const factory: ModuleFactory = (sdk) => {
-  const sdkFsState = async (fs: ModuleFs): Promise<{ get<T>(k: string): T | undefined }> => {
-    // Widgets and queries get no store from the host (SDK gap): the module's own state.json is read through sdk.fs.
-    let data: Record<string, unknown> = {};
-    try {
-      data = JSON.parse(await fs.read(`${stateDir()}/state.json`));
-    } catch {}
-    return { get: <T,>(k: string) => data[k] as T | undefined };
-  };
-  const bootOn = (fs: ModuleFs) => fs.exists(`/etc/systemd/system/multi-user.target.wants/${UNIT_NAME}`).catch(() => false);
+  const bootOn = (fs: ReadCtx["fs"]) => fs.exists(`/etc/systemd/system/multi-user.target.wants/${UNIT_NAME}`).catch(() => false);
 
-  /** What the capabilities, the query and the widgets share. Reads only; the engine itself cannot be asked (no exec outside commands). */
-  const summary = async (store: { get<T>(k: string): T | undefined }) => {
+  /** What the capabilities, the queries and the widgets share: the store and the files, never the live engine (that one is probed by `firewall.active` only). */
+  const summary = async ({ store, fs }: Pick<ReadCtx, "store" | "fs">) => {
     const st: FwState = load(store);
-    const last = store.get<{ at: string; engine: string; key: string; rules: number }>("lastApply");
-    const pend = await pendingInfo(sdk.fs, store);
+    const last = store.get<{ at: string; engine: string; key: string; rules: number; failsafe?: string }>("lastApply");
+    const pend = await pendingInfo(fs, store);
     return { st, last, pend, current: !!last && last.key === keyOf(st), engineSetting: store.get<string>("engine") ?? "auto", missing: missingBase(st) };
   };
 
-  const proveActive = async ({ store }: { store: { get<T>(k: string): T | undefined } }): Promise<Proof> => {
-    const s = await summary(store);
+  const proveActive = async (ctx: ReadCtx): Promise<Proof> => {
+    const { store, fs } = ctx;
+    const s = await summary(ctx);
     if (s.pend.state === "pending") return { level: "warn", text: `aplicação aguardando confirmação (${s.pend.left}s)`, fix: "firewall confirm" };
     if (s.pend.state === "reverted") return { level: "error", text: "a última aplicação foi revertida automaticamente", fix: "firewall apply" };
     if (!s.last) return { level: "warn", text: "o firewall nunca foi aplicado por este módulo", fix: "firewall apply" };
     if (!s.current) return { level: "warn", text: "as listas mudaram desde o último apply", fix: "firewall apply" };
-    if (!(await bootOn(sdk.fs))) return { level: "warn", text: `aplicado (${s.last.engine}, ${s.last.rules} regras), mas sem start-on-boot`, fix: "firewall boot enable" };
-    return { level: "ok", text: `${s.last.engine}: ${s.last.rules} regras aplicadas em ${s.last.at}; start-on-boot habilitado`, evidence: "registro do último apply; o estado vivo vem de `firewall status`" };
+    // The record says "applied"; only the engine knows whether the rules are still loaded (an external flush leaves the record intact).
+    const picked = await pickEngine(ctx.exec, store.get<EngineSetting>("engine") ?? "auto");
+    if ("error" in picked) return { level: "error", text: picked.error };
+    const live = await picked.engine.status({ exec: ctx.exec, zone: store.get<string>("zone") });
+    if (!live.available) return { level: "error", text: `engine indisponível: ${picked.engine.id} (${live.reason ?? "?"})` };
+    if (!live.active) return { level: "error", text: `${picked.engine.id}: nenhuma regra do pvx carregada (as regras foram removidas fora do módulo)`, fix: "firewall apply", evidence: `registro do último apply: ${s.last.rules} regras em ${s.last.at}` };
+    const gone = diffRules(live.rules, picked.engine.render(desiredOf(s.st, s.last.failsafe))).added.length;
+    if (gone) return { level: "warn", text: `${picked.engine.id}: faltam ${gone} regra(s) das listas nas regras vivas`, fix: "firewall apply", evidence: "`firewall check` mostra a diferença" };
+    if (!(await bootOn(fs))) return { level: "warn", text: `aplicado (${s.last.engine}, ${s.last.rules} regras), mas sem start-on-boot`, fix: "firewall boot enable" };
+    return { level: "ok", text: `${s.last.engine}: ${s.last.rules} regras aplicadas em ${s.last.at}; start-on-boot habilitado`, evidence: "regras vivas conferidas com as listas" };
   };
 
   return {
@@ -334,7 +335,7 @@ export const factory: ModuleFactory = (sdk) => {
         fix: "firewall ip trust-asterisk",
         affects: ["firewall.active"],
         optIn: true,
-        // prove cannot run asterisk (no exec outside commands): it reads what the last review left.
+        // Reads what the last `trust-asterisk` review left; asking the live Asterisk is not a probe this module runs here.
         prove: ({ store }) => {
           const a = store.get<{ pending: { ip: string; peer: string }[] }>("asterisk");
           if (!a) return { level: "warn", text: "ainda não revisado" };
@@ -343,10 +344,12 @@ export const factory: ModuleFactory = (sdk) => {
       },
     ],
     queries: {
-      "firewall.missingBaseIps": async () => missingBase(load(await sdkFsState(sdk.fs))).map(([ip, comment]) => ({ ip, comment })),
-      "firewall.status": async () => {
-        const s = await summary(await sdkFsState(sdk.fs));
-        return { engine: s.last?.engine ?? s.engineSetting, applied: s.last ?? null, current: s.current, pending: s.pend, missingBaseIps: s.missing.map(([ip]) => ip), boot: await bootOn(sdk.fs) };
+      "firewall.missingBaseIps": function () {
+        return missingBase(load(this.store)).map(([ip, comment]) => ({ ip, comment }));
+      },
+      "firewall.status": async function () {
+        const s = await summary(this);
+        return { engine: s.last?.engine ?? s.engineSetting, applied: s.last ?? null, current: s.current, pending: s.pend, missingBaseIps: s.missing.map(([ip]) => ip), boot: await bootOn(this.fs) };
       },
     },
     widgets: {
@@ -354,8 +357,8 @@ export const factory: ModuleFactory = (sdk) => {
         slot: "home.chips",
         priority: 30,
         refreshMs: 15000,
-        data: async () => {
-          const s = await summary(await sdkFsState(sdk.fs));
+        data: async (ctx) => {
+          const s = await summary(ctx);
           const eng = s.last?.engine ?? s.engineSetting;
           if (!s.last) return [{ label: `firewall · ${eng} · não aplicado`, level: "warn" as const }];
           const level = s.pend.state === "reverted" ? ("error" as const) : s.pend.state !== "none" || !s.current ? ("warn" as const) : ("ok" as const);
@@ -366,8 +369,8 @@ export const factory: ModuleFactory = (sdk) => {
         slot: "home.attention",
         priority: 30,
         refreshMs: 15000,
-        data: async () => {
-          const s = await summary(await sdkFsState(sdk.fs));
+        data: async (ctx) => {
+          const s = await summary(ctx);
           return [
             ...(s.missing.length ? [{ level: "warn" as const, title: `firewall: faltam ${s.missing.length} IP(s) base da Phonevox`, fix: "firewall ip trust-phonevox" }] : []),
             ...(s.pend.state === "pending" ? [{ level: "warn" as const, title: `firewall: reversão automática em ${s.pend.left}s`, fix: "firewall confirm" }] : []),

@@ -32,7 +32,7 @@ export interface EngineStatus {
 
 export interface Engine {
   id: EngineId;
-  status(io: Io): Promise<EngineStatus>;
+  status(io: Pick<Io, "exec" | "zone">): Promise<EngineStatus>;
   /** Pure: the rules, in order, in the engine's canonical form. One line is one rule. */
   render(d: Desired, zone?: string): string[];
   /** Loads the rules (atomically where the engine allows). Throws on failure. */

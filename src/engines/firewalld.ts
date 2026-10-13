@@ -21,8 +21,8 @@ export const rules = (d: Desired): string[] => [
   ...d.portAccept.flatMap((p) => expandPort(p).map((x) => `rule priority="${P.portAccept}" port port="${x.range}" protocol="${x.proto}" accept`)),
 ];
 
-const fc = (io: Io, args: string[]) => run(io.exec, "firewall-cmd", args);
-const zoneOf = (io: Io) => io.zone ?? DEFAULT_ZONE;
+const fc = (io: Pick<Io, "exec" | "zone">, args: string[]) => run(io.exec, "firewall-cmd", args);
+const zoneOf = (io: Pick<Io, "exec" | "zone">) => io.zone ?? DEFAULT_ZONE;
 const need = async (io: Io, args: string[]) => {
   const r = await fc(io, args);
   if (!ok(r)) throw fail(`firewall-cmd ${args.join(" ")}`, r);
@@ -30,7 +30,7 @@ const need = async (io: Io, args: string[]) => {
 };
 const lines = (s: string) => s.split("\n").map((l) => l.trim()).filter(Boolean);
 
-const listOwned = async (io: Io) => {
+const listOwned = async (io: Pick<Io, "exec" | "zone">) => {
   const r = await fc(io, ["--permanent", `--zone=${zoneOf(io)}`, "--list-rich-rules"]);
   return ok(r) ? lines(r.stdout).filter((l) => OWNED.test(l)) : [];
 };
@@ -39,7 +39,7 @@ export const firewalld: Engine = {
   id: "firewalld",
   ...makeBoot("firewalld"),
   render: rules,
-  async status(io: Io): Promise<EngineStatus> {
+  async status(io: Pick<Io, "exec" | "zone">): Promise<EngineStatus> {
     const a = await run(io.exec, "systemctl", ["is-active", "firewalld"]);
     if (a.stdout.trim() !== "active") return { available: false, reason: "firewalld não está ativo", active: false, rules: [] };
     const v = await fc(io, ["--version"]);

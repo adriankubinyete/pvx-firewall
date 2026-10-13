@@ -3,11 +3,18 @@ import type { ModuleDef, Sdk, SlotData } from "@pvx/sdk";
 import factory from "../src/index.tsx";
 import { paths, stateDir } from "../src/rollback.ts";
 import { removeEntry, seed } from "../src/state.ts";
-import { fakeFs, memStore } from "./fake.ts";
+import { nftables } from "../src/engines/nft.ts";
+import { desiredOf } from "../src/state.ts";
+import { fakeExec, fakeFs, memStore, type Call } from "./fake.ts";
 
 const build = (fs = fakeFs()) => ({ fs, def: (factory as (s: Sdk) => ModuleDef)({ version: 1, ui: {} as Sdk["ui"], fs, log: { debug() {}, info() {}, warn() {}, error() {} } }) });
 const cap = (def: ModuleDef, id: string) => def.capabilities!.find((c) => c.id === id)!;
-const ctx = (store: ReturnType<typeof memStore>) => ({ store, log: { debug() {}, info() {}, warn() {}, error() {} }, query: () => undefined }) as never;
+const quiet = { debug() {}, info() {}, warn() {}, error() {} };
+// The read-only context the host hands to prove, queries and widgets: `this` for the queries.
+const ctx = (store: ReturnType<typeof memStore>, fs = fakeFs(), exec = fakeExec().exec) => ({ store, log: quiet, query: () => undefined, exec, fs }) as never;
+/** An exec for a host with nftables whose live rules are `rules` (none: the table is gone). */
+const nftHost = (rules?: string[]) =>
+  fakeExec((c: Call) => (c.cmd === "nft" && c.args[0] === "list" ? (rules ? { stdout: `table ip pvx {\n\tchain input {\n\t\ttype filter hook input priority -10; policy accept;\n${rules.map((r) => `\t\t${r}\n`).join("")}\t}\n}\n` } : { code: 1 }) : { stdout: "nftables v1" })).exec;
 const stateFile = () => `${stateDir()}/state.json`;
 
 test("capabilities wire as specified", () => {
@@ -38,17 +45,22 @@ test("base-ips: ok when covered, warn with the missing ones", async () => {
 
 test("active: never applied, applied but lists changed, pending, reverted, no boot, ok", async () => {
   const { def, fs } = build();
-  const prove = (store: ReturnType<typeof memStore>) => cap(def, "firewall.active").prove(ctx(store));
+  const prove = (store: ReturnType<typeof memStore>) => cap(def, "firewall.active").prove(ctx(store, fs));
   expect(await prove(memStore())).toMatchObject({ level: "warn", fix: "firewall apply" });
 
   const { keyOf } = await import("../src/state.ts");
   const key = keyOf(seed());
   const last = { at: "T", engine: "nftables", key, rules: 30 };
   expect(await prove(memStore({ lastApply: { ...last, key: "other" } }))).toMatchObject({ level: "warn", text: expect.stringContaining("listas mudaram") });
-  expect(await prove(memStore({ lastApply: last }))).toMatchObject({ level: "warn", fix: "firewall boot enable" });
+  const live = nftHost(nftables.render(desiredOf(seed())));
+  const proveLive = (store: ReturnType<typeof memStore>, exec = live) => cap(def, "firewall.active").prove(ctx(store, fs, exec));
+  expect(await proveLive(memStore({ lastApply: last }))).toMatchObject({ level: "warn", fix: "firewall boot enable" });
 
   fs.files.set("/etc/systemd/system/multi-user.target.wants/pvx-firewall.service", "");
-  expect((await prove(memStore({ lastApply: last }))).level).toBe("ok");
+  expect((await proveLive(memStore({ lastApply: last }))).level).toBe("ok");
+  // An external flush leaves the record intact: only the live probe sees it.
+  expect(await proveLive(memStore({ lastApply: last }), nftHost())).toMatchObject({ level: "error", fix: "firewall apply", text: expect.stringContaining("removidas") });
+  expect(await proveLive(memStore({ lastApply: last }), nftHost(["drop"]))).toMatchObject({ level: "warn", text: expect.stringContaining("faltam") });
 
   const soon = { deadline: Date.now() + 30_000 };
   fs.files.set(paths().marker, "1"); // marker there: the revert is still armed
@@ -70,14 +82,16 @@ test("queries firewall.missingBaseIps and firewall.status read the module state"
   const st = seed();
   removeEntry(st, ["ipAccept"], "127.0.0.1");
   fs.files.set(stateFile(), JSON.stringify({ state: st, engine: "iptables" }));
-  expect(await def.queries!["firewall.missingBaseIps"]!("firewall.missingBaseIps")).toEqual([{ ip: "127.0.0.1", comment: "LOCALHOST" }]);
-  expect(await def.queries!["firewall.status"]!("firewall.status")).toMatchObject({ engine: "iptables", applied: null, current: false, missingBaseIps: ["127.0.0.1"], boot: false });
+  const q = (name: string) => def.queries![name]!.call(ctx(memStore(JSON.parse(fs.files.get(stateFile())!)), fs), name);
+  expect(await q("firewall.missingBaseIps")).toEqual([{ ip: "127.0.0.1", comment: "LOCALHOST" }]);
+  expect(await q("firewall.status")).toMatchObject({ engine: "iptables", applied: null, current: false, missingBaseIps: ["127.0.0.1"], boot: false });
 });
 
 test("widgets: chip says engine and rule count with a level; attention lists the missing base IPs with the fix", async () => {
   const { def, fs } = build();
-  const chip = () => def.widgets!.chip!.data() as Promise<{ label: string; level: string; detail?: string }[]>;
-  const att = () => def.widgets!.atencao!.data() as Promise<{ level: string; title: string; fix?: string }[]>;
+  const read = () => ctx(memStore(JSON.parse(fs.files.get(stateFile()) ?? "{}")), fs);
+  const chip = () => def.widgets!.chip!.data(read()) as Promise<{ label: string; level: string; detail?: string }[]>;
+  const att = () => def.widgets!.atencao!.data(read()) as Promise<{ level: string; title: string; fix?: string }[]>;
   expect(await chip()).toEqual([{ label: "firewall · auto · não aplicado", level: "warn" }]);
   const { keyOf } = await import("../src/state.ts");
   const st = seed();
