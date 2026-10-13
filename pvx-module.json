@@ -1,0 +1,16 @@
+{
+  "id": "firewall",
+  "version": "0.1.0",
+  "entry": "src/index.tsx",
+  "pvx": ">=0.0.1",
+  "permissions": {
+    "exec": ["firewall-cmd", "nft", "iptables", "iptables-save", "iptables-restore", "systemctl", "systemd-run", "asterisk", "who", "sh"],
+    "fs": ["rw:/etc/systemd/system/", "rw:$PVX_HOME/modules/firewall/state/"]
+  },
+  "contributes": {
+    "commands": ["status", "check", "apply", "confirm", "revert", "engine", "ip list", "ip accept", "ip deny", "ip remove", "ip trust-phonevox", "ip trust-asterisk", "port list", "port accept", "port deny", "port remove", "boot enable", "boot disable", "boot status"],
+    "pages": ["firewall"],
+    "widgets": ["chip", "atencao"],
+    "capabilities": ["firewall.active", "firewall.base-ips", "firewall.asterisk-ips"]
+  }
+}
