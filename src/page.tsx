@@ -11,6 +11,7 @@ interface Row {
   list: ListName;
   entry: Entry;
 }
+type PanelId = "status" | "ips" | "portas";
 type Mode = { k: "main" } | { k: "form"; kind: "ip" | "port"; edit?: Row } | { k: "review"; lines: { text: string; tone: Tone }[] } | { k: "busy"; text: string } | { k: "countdown" };
 
 const CHROME = 6;
@@ -25,7 +26,7 @@ const headline = (r: CommandRun): { text: string; tone: Tone } => {
 };
 
 export function page(sdk: Sdk) {
-  const { h, Fragment, Panel, Row: Side, Text, List, Fields, useState, useEffect, useMemo, useStore, useCommand, useKey, useNudge, useTheme, useViewport } = sdk.ui;
+  const { h, Fragment, Panel, Row: Side, Text, List, Fields, useState, useEffect, useMemo, useStore, useCommand, useKey, useBack, useNudge, usePanels, useTheme, useViewport } = sdk.ui;
 
   function Key({ keys, label, run, help }: { keys: string; label: string; run: () => void; help?: boolean }) {
     useKey(keys, label, run, help ? { help: true } : undefined);
@@ -86,7 +87,8 @@ export function page(sdk: Sdk) {
     const { cols, rows } = useViewport();
     const { g } = useTheme();
     const [mode, setMode] = useState<Mode>({ k: "main" });
-    const [focus, setFocus] = useState<1 | 2 | 3>(1);
+    const nav = usePanels();
+    const [at, setAt] = useState<{ panel: PanelId; inside: boolean }>({ panel: "status", inside: false });
     const [ver, setVer] = useState(0);
     const [sel, setSel] = useState<{ ip?: string; port?: string }>({});
     const [note, setNote] = useState<{ text: string; tone: Tone } | null>(null);
@@ -167,6 +169,8 @@ export function page(sdk: Sdk) {
       setNote(headline(r));
     };
 
+    useBack(mode.k === "main" && at.inside ? () => setAt({ panel: at.panel, inside: false }) : undefined);
+
     const body = Math.max(4, rows - CHROME - 1);
     const wide = cols >= WIDE;
     const listCap = Math.max(2, wide ? body - 8 - 2 : Math.floor((body - 8) / 2) - 2);
@@ -209,8 +213,9 @@ export function page(sdk: Sdk) {
       if (i >= rs.length) return nudge("fim da lista");
       setSel({ ...sel, [key]: rs[i]!.id });
     };
-    const listPanel = (n: 2 | 3, title: string, rs: Row[], key: "ip" | "port") => {
+    const listPanel = (n: 2 | 3, id: PanelId, title: string, rs: Row[], key: "ip" | "port") => {
       const c = cur(rs, sel[key]);
+      const here = at.panel === id;
       const items = windowed(rs, c?.id, listCap).map((r) => ({
         id: r.id,
         label: r.entry.value,
@@ -219,8 +224,8 @@ export function page(sdk: Sdk) {
         mark: { text: MARK[r.entry.source] ?? "?", tone: (r.entry.source === "base" ? "dim" : r.entry.source === "asterisk" ? "info" : "accent") as Tone },
       }));
       return (
-        <Panel key={n} title={`[${n}] ${title} ${rs.length ? `${rs.indexOf(c!) + 1}/${rs.length}` : "0"}${focus === n ? ` ${g.active}` : ""}`} tone={focus === n ? "accent" : undefined} grow={wide}>
-          {rs.length ? <List items={items} selected={c?.id} /> : <Text tone="dim">vazio</Text>}
+        <Panel key={n} title={`[${n}] ${title} ${rs.length ? `${rs.indexOf(c!) + 1}/${rs.length}` : "0"}${here ? ` ${g.active}` : ""}`} tone={here ? "accent" : undefined} grow={wide} panelRef={nav.ref(id)}>
+          {rs.length ? <List items={items} selected={here && at.inside ? c?.id : undefined} /> : <Text tone="dim">vazio</Text>}
         </Panel>
       );
     };
@@ -229,7 +234,19 @@ export function page(sdk: Sdk) {
       ...(status ?? [{ text: "consultando o firewall…", tone: "dim" as Tone }]),
       ...(pending && left > 0 ? [{ text: `reversão automática em ${left}s (firewall confirm)`, tone: "warn" as Tone }] : []),
     ];
-    const lists = [listPanel(2, "IPs", ipRows, "ip"), listPanel(3, "portas", portRows, "port")];
+    const lists = [listPanel(2, "ips", "IPs", ipRows, "ip"), listPanel(3, "portas", "portas", portRows, "port")];
+    const rowsOf = (id: string) => (id === "ips" ? ipRows : id === "portas" ? portRows : []);
+    const listKey = at.panel === "ips" ? "ip" : "port";
+    // Same two-level rule as Início: the host's `step` says what an arrow or enter does at this level.
+    const press = (key: "left" | "right" | "up" | "down" | "enter") => {
+      const st = nav.step(at, key, (id) => rowsOf(id).length);
+      if (!st) return;
+      if (st.bar) return nav.toBar();
+      if (st.nudge) return nudge(st.nudge);
+      if (st.move) return movement(rowsOf(at.panel), listKey, st.move);
+      if (!st.act) setAt({ panel: st.panel as PanelId, inside: st.inside });
+    };
+    const jump = (panel: PanelId) => setAt({ panel, inside: false });
     const edit = (rs: Row[], key: "ip" | "port") => {
       const c = cur(rs, sel[key]);
       return c ? setMode({ k: "form", kind: key, edit: c }) : nudge("nada aqui");
@@ -242,24 +259,33 @@ export function page(sdk: Sdk) {
 
     return (
       <Panel>
-        <Key keys="←" label="painel" run={() => (focus === 1 ? nudge("nada aqui") : setFocus((focus - 1) as 1 | 2 | 3))} />
-        <Key keys="→" label="painel" run={() => (focus === 3 ? nudge("nada aqui") : setFocus((focus + 1) as 1 | 2 | 3))} help />
-        <Key keys="1" label="status" run={() => setFocus(1)} help />
-        <Key keys="2" label="IPs" run={() => setFocus(2)} help />
-        <Key keys="3" label="portas" run={() => setFocus(3)} help />
         <Key keys="r" label="atualiza" run={() => void refreshStatus()} />
         <Key keys="A" label="aplica" run={() => void review()} />
-        {focus !== 1 ? (
+        {at.inside ? (
           <>
-            <Key keys="↑" label="sobe" run={() => movement(focus === 2 ? ipRows : portRows, focus === 2 ? "ip" : "port", -1)} help />
-            <Key keys="↓" label="desce" run={() => movement(focus === 2 ? ipRows : portRows, focus === 2 ? "ip" : "port", 1)} help />
-            <Key keys="a" label="adiciona" run={() => setMode({ k: "form", kind: focus === 2 ? "ip" : "port" })} />
-            <Key keys="x" label="remove" run={() => void rm(focus === 2 ? ipRows : portRows, focus === 2 ? "ip" : "port")} />
-            <Key keys="c" label="comenta" run={() => edit(focus === 2 ? ipRows : portRows, focus === 2 ? "ip" : "port")} />
+            {/* Footer-only label: it matches no key, the real arrows below are in `?`. */}
+            <Key keys="↑↓" label="item" run={() => {}} />
+            <Key keys="↑" label="sobe" run={() => press("up")} help />
+            <Key keys="↓" label="desce" run={() => press("down")} help />
+            <Key keys="a" label="adiciona" run={() => setMode({ k: "form", kind: listKey })} />
+            <Key keys="x" label="remove" run={() => void rm(rowsOf(at.panel), listKey)} />
+            <Key keys="c" label="comenta" run={() => edit(rowsOf(at.panel), listKey)} />
+            {at.panel === "ips" ? <Key keys="t" label="trust-phonevox" run={async () => after(await cTrust.run())} /> : null}
           </>
-        ) : null}
-        {focus === 2 ? <Key keys="t" label="trust-phonevox" run={async () => after(await cTrust.run())} /> : null}
-        <Panel title={`[1] status${focus === 1 ? ` ${g.active}` : ""}`} tone={focus === 1 ? "accent" : undefined}>
+        ) : (
+          <>
+            <Key keys="↑↓←→" label="painel" run={() => {}} />
+            <Key keys="←" label="painel" run={() => press("left")} help />
+            <Key keys="→" label="painel" run={() => press("right")} help />
+            <Key keys="↑" label="painel" run={() => press("up")} help />
+            <Key keys="↓" label="painel" run={() => press("down")} help />
+            <Key keys="enter" label="entra" run={() => press("enter")} />
+            <Key keys="1" label="status" run={() => jump("status")} help />
+            <Key keys="2" label="IPs" run={() => jump("ips")} help />
+            <Key keys="3" label="portas" run={() => jump("portas")} help />
+          </>
+        )}
+        <Panel title={`[1] status${at.panel === "status" ? ` ${g.active}` : ""}`} tone={at.panel === "status" ? "accent" : undefined} panelRef={nav.ref("status")}>
           <Lines lines={statusLines} max={6} />
         </Panel>
         {note ? <Text tone={note.tone}>{note.text}</Text> : <Text tone="dim"> </Text>}

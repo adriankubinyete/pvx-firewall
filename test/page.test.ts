@@ -43,34 +43,97 @@ test("three numbered panels; the status panel runs the module's own `status` com
   expect(f).toContain("[1] status ●"); // the focus mark follows the panel
 });
 
-test("focus: 1/2/3 and arrows move it, the footer follows it, an illegal move nudges", async () => {
+test("panel level: 1/2/3 jump, arrows move spatially, the footer shows the level's keys", async () => {
   const p = await open();
-  expect(p.frame()).not.toContain("adiciona");
+  for (const k of ["adiciona", "remove", "comenta", "trust-phonevox"]) expect(p.frame()).not.toContain(k);
+  expect(p.frame()).toContain("↑↓←→ painel");
+  expect(p.frame()).toContain("enter entra");
   await p.press("2");
   expect(p.frame()).toContain("[2] IPs 1/13 ●");
-  for (const k of ["adiciona", "remove", "comenta", "trust-phonevox"]) expect(p.frame()).toContain(k);
   await p.press("ARROW_RIGHT");
   expect(p.frame()).toContain("[3] portas 1/20 ●");
-  expect(p.frame()).not.toContain("trust-phonevox");
   await p.press("ARROW_RIGHT");
   expect(p.frame()).toContain("nada aqui");
-  await p.press("1");
   await p.press("ARROW_LEFT");
-  expect(p.frame()).toContain("nada aqui");
+  expect(p.frame()).toContain("[2] IPs 1/13 ●");
+  await p.press("ARROW_UP");
+  expect(p.frame()).toContain("[1] status ●");
+  await p.press("3");
+  expect(p.frame()).toContain("[3] portas 1/20 ●");
 });
 
-test("the list cursor is by id, and ↑ at the top nudges", async () => {
+test("stacked layout: ↓ from status focuses IPs, ↓ again portas, ↑ walks back", async () => {
+  const p = await open(90, 40);
+  expect(p.frame()).toContain("[1] status ●");
+  await p.press("ARROW_DOWN");
+  expect(p.frame()).toContain("[2] IPs 1/13 ●");
+  await p.press("ARROW_DOWN");
+  expect(p.frame()).toContain("[3] portas 1/20 ●");
+  await p.press("ARROW_UP");
+  await p.press("ARROW_UP");
+  expect(p.frame()).toContain("[1] status ●");
+});
+
+test("↑ on the topmost panel hands focus to the tab bar (a no-op outside tabs: nothing else moves)", async () => {
+  const p = await open();
+  await p.press("ARROW_UP");
+  expect(p.frame()).toContain("[1] status ●");
+  expect(p.frame()).not.toContain("nada aqui");
+});
+
+test("enter on status nudges; a/x/c/t do nothing at panel level", async () => {
+  const p = await open();
+  await p.press("RETURN");
+  expect(p.frame()).toContain("nada para selecionar");
+  await p.press("2");
+  for (const k of ["a", "x", "c", "t"]) await p.press(k);
+  await p.flush();
+  expect(p.frame()).not.toContain("adicionar IP");
+  expect(p.frame()).not.toContain("comentar");
+  expect(p.frame()).toContain("[2] IPs 1/13 ●");
+  expect(stubs.calls().filter((c) => c.startsWith("nft -f"))).toEqual([]);
+  await p.press("ARROW_DOWN");
+  expect(p.frame()).toContain("[2] IPs 1/13"); // ↓ at panel level moves no row
+});
+
+test("enter goes inside: the cursor shows, ↑↓ move the row, the footer lists the row keys; esc comes back", async () => {
   const p = await open();
   await p.press("2");
+  expect(p.frame()).not.toContain("» B 127.0.0.1"); // no row cursor at panel level
+  await p.press("RETURN");
+  expect(p.frame()).toContain("» B 127.0.0.1");
+  for (const k of ["adiciona", "remove", "comenta", "trust-phonevox", "↑↓ item"]) expect(p.frame()).toContain(k);
+  expect(p.frame()).not.toContain("enter entra");
   await p.press("ARROW_UP");
   expect(p.frame()).toContain("início da lista");
   await p.press("ARROW_DOWN");
   expect(p.frame()).toContain("[2] IPs 2/13");
+  await p.press("ARROW_RIGHT");
+  expect(p.frame()).toContain("[2] IPs 2/13 ●"); // ←/→ do not leave a panel from inside
+  await p.press("ESCAPE");
+  expect(p.frame()).toContain("[2] IPs 2/13 ●");
+  expect(p.frame()).toContain("enter entra");
+  expect(p.frame()).not.toContain("adiciona");
+  expect(p.frame()).not.toContain("» B"); // the selection hides again
+  await p.press("ESCAPE"); // second esc is the host's default (tab bar); the page does not take it
+  expect(p.frame()).toContain("[2] IPs 2/13 ●");
+});
+
+test("inside portas: a opens the port form, t is IPs only", async () => {
+  const p = await open();
+  await p.press("3");
+  await p.press("RETURN");
+  expect(p.frame()).not.toContain("trust-phonevox");
+  await p.press("t");
+  expect(stubs.calls().some((c) => c.includes("nft -f"))).toBe(false);
+  await p.press("a");
+  expect(p.frame()).toContain("adicionar porta");
 });
 
 test("a adiciona: inline fields, the module's own `ip accept`, mark M and the comment", async () => {
   const p = await open();
   await p.press("2");
+  await p.press("RETURN");
   await p.press("a");
   expect(p.frame()).toContain("adicionar IP");
   await p.type("203.0.113.9");
@@ -84,6 +147,7 @@ test("a adiciona: inline fields, the module's own `ip accept`, mark M and the co
 test("x removes the selected row; t brings the base IPs back", async () => {
   const p = await open();
   await p.press("2");
+  await p.press("RETURN");
   await p.press("x");
   await until(p, (f) => f.includes("removido: 127.0.0.1"));
   expect(p.frame()).toContain("[2] IPs 1/12");
@@ -95,6 +159,7 @@ test("x removes the selected row; t brings the base IPs back", async () => {
 test("c edits the comment of the selected entry through the command", async () => {
   const p = await open();
   await p.press("2");
+  await p.press("RETURN");
   await p.press("c");
   expect(p.frame()).toContain("comentar 127.0.0.1");
   await p.type("loop");
