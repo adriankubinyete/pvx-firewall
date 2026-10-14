@@ -1,136 +1,305 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { renderPage, type TuiHarness } from "@pvx/testing";
-import { installStubs, type Stubs } from "./stubs.ts";
+import { installStubs, withSshSession, type Stubs } from "./stubs.ts";
 
-const dir = join(import.meta.dir, "..");
-let t: TuiHarness | undefined;
+const moduleDir = join(import.meta.dir, "..");
+let page: TuiHarness | undefined;
 let stubs: Stubs;
-const ssh = process.env.SSH_CLIENT;
+
+withSshSession();
 beforeEach(() => {
   stubs = installStubs(["nft", "systemctl", "systemd-run", "who", "asterisk"]);
-  process.env.SSH_CLIENT = "203.0.113.7 5555 22";
 });
 afterEach(() => {
-  t?.destroy();
+  page?.destroy();
   stubs.restore();
-  if (ssh === undefined) delete process.env.SSH_CLIENT;
-  else process.env.SSH_CLIENT = ssh;
 });
 
 /** Real processes run behind these commands, so wait in time, not in frames. */
-const until = async (p: TuiHarness, pred: (f: string) => boolean, ms = 4000): Promise<string> => {
-  const end = Date.now() + ms;
+const until = async (target: TuiHarness, matches: (frame: string) => boolean, timeoutMs = 4000): Promise<string> => {
+  const deadline = Date.now() + timeoutMs;
   for (;;) {
-    await p.flush();
-    const f = p.frame();
-    if (pred(f)) return f;
-    if (Date.now() > end) throw new Error(`tempo esgotado esperando o quadro:\n${f}`);
+    await target.flush();
+    const frame = target.frame();
+    if (matches(frame)) return frame;
+    if (Date.now() > deadline) throw new Error(`tempo esgotado esperando o quadro:\n${frame}`);
     await Bun.sleep(25);
   }
 };
+const untilShows = (target: TuiHarness, text: string) => until(target, (frame) => frame.includes(text));
 
+/** The page, once the status query has answered. */
 const open = async (cols = 120, rows = 30) => {
-  t = await renderPage(dir, "firewall", { cols, rows });
-  await until(t, (f) => f.includes("status:"));
-  return t;
+  page = await renderPage(moduleDir, "firewall", { cols, rows });
+  await untilShows(page, "status:");
+  return page;
 };
 
-test("three numbered panels; the status panel runs the module's own `status` command", async () => {
-  const p = await open();
-  const f = p.frame();
-  for (const s of ["[1] status", "[2] IPs 1/13", "[3] portas 1/20", "status: INATIVO", "engine: nftables (auto)", "127.0.0.1"]) expect(f).toContain(s);
-  expect(f).toContain("[1] status ●"); // the focus mark follows the panel
+const nftWasLoaded = () => stubs.calls().some((call) => call.startsWith("nft -f"));
+const anyCall = (prefix: string) => stubs.calls().some((call) => call.startsWith(prefix));
+
+// ---- layout ----
+
+test("three numbered panels; the status comes from a query, with a spinner while it loads", async () => {
+  page = await renderPage(moduleDir, "firewall", { cols: 120, rows: 30 });
+  expect(page.frame()).toContain("consultando o firewall…");
+  const frame = await untilShows(page, "status: INATIVO");
+  for (const text of ["[1] status ●", "[2] IPs 1/13", "[3] portas 1/20", "engine: nftables (auto)", "127.0.0.1"]) expect(frame).toContain(text);
+  expect(frame).toMatch(/valor\s+ação\s+origem\s+comentário/);
+  expect(frame).toContain("+ adicionar…");
+  expect(frame).toContain("+ confiar IPs da Phonevox");
+  expect(frame).toContain("[ aplicar ]");
 });
 
-test("focus: 1/2/3 and arrows move it, the footer follows it, an illegal move nudges", async () => {
+test("120 columns: the lists sit side by side; 100 and 80: stacked", async () => {
+  const wide = await open(120, 30);
+  const listsLine = wide.frame().split("\n").find((line) => line.includes("[2] IPs"));
+  expect(listsLine).toContain("[3] portas");
+  wide.destroy();
+
+  const stacked = await open(100, 30);
+  const frame = stacked.frame();
+  expect(frame.split("\n").find((line) => line.includes("[2] IPs"))).not.toContain("[3] portas");
+  expect(frame).toContain("[3] portas");
+  expect(frame).toContain("5060/udp"); // the second list shows rows too
+});
+
+test("80x24: the focused list gets the height and the other collapses to its title; nothing is cut", async () => {
+  const small = await open(80, 24);
+  expect(small.frame()).toContain("[2] IPs 1/13");
+  expect(small.frame()).toContain("[3] portas 1/20");
+  expect(small.frame()).not.toContain("5060/udp"); // collapsed
+  await small.press("3");
+  const frame = small.frame();
+  expect(frame).toContain("5060/udp");
+  expect(frame).toContain("+ adicionar…"); // the action row under the entries is always shown
+  expect(frame).not.toContain("127.0.0.1"); // the IPs list collapsed in turn
+  expect(frame.split("\n").filter((line) => line.includes("╰")).length).toBeGreaterThanOrEqual(3); // every panel keeps its bottom border
+});
+
+// ---- focus: the four levels ----
+
+test("1/2/3 jump, the arrows pick the panel on that side, enter goes inside, esc comes out", async () => {
   const p = await open();
-  expect(p.frame()).not.toContain("adiciona");
+  expect(p.frame()).not.toContain("a adiciona"); // the status panel has no list keys
   await p.press("2");
   expect(p.frame()).toContain("[2] IPs 1/13 ●");
-  for (const k of ["adiciona", "remove", "comenta", "trust-phonevox"]) expect(p.frame()).toContain(k);
+  expect(p.frame()).not.toContain("»"); // focus on the panel: no row selected yet
+  for (const key of ["a adiciona", "t trust-phonevox", "A aplicar"]) expect(p.frame()).toContain(key);
   await p.press("ARROW_RIGHT");
   expect(p.frame()).toContain("[3] portas 1/20 ●");
   expect(p.frame()).not.toContain("trust-phonevox");
   await p.press("ARROW_RIGHT");
-  expect(p.frame()).toContain("nada aqui");
-  await p.press("1");
+  expect(p.frame()).toContain("nada aqui"); // nothing to the right
   await p.press("ARROW_LEFT");
-  expect(p.frame()).toContain("nada aqui");
+  await p.press("RETURN");
+  expect(p.frame()).toMatch(/»\s+127\.0\.0\.1/); // inside the IPs list: the first row is selected
+  await p.press("ESCAPE");
+  expect(p.frame()).not.toContain("»");
+  expect(p.frame()).toContain("[2] IPs 1/13 ●"); // esc left the list, not the panel
 });
 
-test("the list cursor is by id, and ↑ at the top nudges", async () => {
+test("enter on the status panel says there is nothing to select", async () => {
+  const p = await open();
+  await p.press("RETURN");
+  expect(p.frame()).toContain("nada para selecionar");
+});
+
+test("inside a list the selection wraps at both ends and is by id", async () => {
   const p = await open();
   await p.press("2");
+  await p.press("RETURN");
   await p.press("ARROW_UP");
-  expect(p.frame()).toContain("início da lista");
+  expect(p.frame()).toMatch(/»\s+\+ confiar IPs da Phonevox/); // from the first row to the last
+  await p.press("ARROW_DOWN");
+  expect(p.frame()).toMatch(/»\s+127\.0\.0\.1/);
   await p.press("ARROW_DOWN");
   expect(p.frame()).toContain("[2] IPs 2/13");
 });
 
-test("a adiciona: inline fields, the module's own `ip accept`, mark M and the comment", async () => {
+test("stacked panels: ↓ goes to the panel below", async () => {
+  const p = await open(100, 30);
+  await p.press("ARROW_DOWN");
+  expect(p.frame()).toContain("[2] IPs 1/13 ●");
+  await p.press("ARROW_DOWN");
+  expect(p.frame()).toContain("[3] portas 1/20 ●");
+});
+
+// ---- mouse ----
+
+const positionOf = (frame: string, text: string) => {
+  const lines = frame.split("\n");
+  const y = lines.findIndex((line) => line.includes(text));
+  if (y < 0) throw new Error(`"${text}" não está no quadro:\n${frame}`);
+  return { x: lines[y]!.indexOf(text), y };
+};
+
+test("a click on a panel focuses it; a click on a row goes inside and selects it", async () => {
+  const p = await open();
+  const title = positionOf(p.frame(), "[3] portas");
+  await p.click(title.x + 1, title.y);
+  expect(p.frame()).toContain("[3] portas 1/20 ●");
+  const row = positionOf(p.frame(), "5061/tcp");
+  await p.click(row.x, row.y);
+  expect(p.frame()).toContain("[3] portas 3/20 ●");
+  expect(p.frame()).toMatch(/»\s+5061\/tcp/);
+});
+
+test("hover moves the selection only inside the list that has the focus", async () => {
+  const p = await open();
+  const row = positionOf(p.frame(), "10.0.0.0/8");
+  await p.hover(row.x, row.y);
+  expect(p.frame()).toContain("[2] IPs 1/13"); // not focused: only a tint
+  await p.press("2");
+  await p.press("RETURN");
+  const hovered = positionOf(p.frame(), "192.168.0.0/16");
+  await p.hover(hovered.x, hovered.y);
+  expect(p.frame()).toContain("[2] IPs 4/13");
+});
+
+test("the action rows and the aplicar button react to the click", async () => {
+  const p = await open();
+  const addRow = positionOf(p.frame(), "+ adicionar…");
+  await p.click(addRow.x, addRow.y);
+  expect(p.frame()).toContain("adicionar IP");
+  await p.press("ESCAPE");
+  const apply = positionOf(p.frame(), "[ aplicar ]");
+  await p.click(apply.x + 2, apply.y);
+  await until(p, (frame) => frame.includes("o que muda"));
+});
+
+// ---- forms ----
+
+test("a: the add form validates inline, then runs the module's own `ip accept` with the comment", async () => {
   const p = await open();
   await p.press("2");
   await p.press("a");
   expect(p.frame()).toContain("adicionar IP");
+  await p.type("300.1.1.1");
+  await p.press("s", { ctrl: true });
+  expect(p.frame()).toContain("IP/CIDR inválido: 300.1.1.1"); // inline, under the field; nothing ran
+  expect(p.frame()).toContain("adicionar IP");
+  for (let i = 0; i < "300.1.1.1".length; i++) await p.press("BACKSPACE");
   await p.type("203.0.113.9");
+  await p.press("TAB");
   await p.press("TAB");
   await p.type("fulano");
   await p.press("s", { ctrl: true });
-  const f = await until(p, (x) => x.includes("[2] IPs") && x.includes("/14"));
-  expect(f).toContain("adicionado: 203.0.113.9");
+  const frame = await until(p, (f) => f.includes("[2] IPs") && f.includes("/14"));
+  expect(frame).toContain("adicionado: 203.0.113.9");
 });
 
-test("x removes the selected row; t brings the base IPs back", async () => {
+test("the add form's choice sends the entry to the deny list", async () => {
   const p = await open();
   await p.press("2");
-  await p.press("x");
+  await p.press("a");
+  await p.type("198.51.100.0/24");
+  await p.press("TAB");
+  await p.press("ARROW_DOWN");
+  await p.press(" ");
+  await p.press("s", { ctrl: true });
+  await untilShows(p, "adicionado: 198.51.100.0/24");
+  expect((await untilShows(p, "[2] IPs 1/14"))).toContain("[2] IPs 1/14");
+});
+
+test("enter on a row edits its comment through the command", async () => {
+  const p = await open();
+  await p.press("2");
+  await p.press("RETURN");
+  await p.press("RETURN");
+  expect(p.frame()).toContain("comentar 127.0.0.1");
+  await p.type("loop");
+  await p.press("s", { ctrl: true });
+  await until(p, (f) => f.includes("comentário atualizado: 127.0.0.1"));
+  expect(p.frame()).toContain("LOCALHOSTlo"); // the field started with the current comment (the column cuts the rest)
+});
+
+test("the form's remover button asks first, then removes through the command", async () => {
+  const p = await open();
+  await p.press("2");
+  await p.press("RETURN");
+  await p.press("RETURN");
+  for (let i = 0; i < 3; i++) await p.press("TAB"); // comentário -> salvar -> cancelar -> remover
+  await p.press("RETURN");
+  expect(p.frame()).toContain("remover? enter confirma");
+  await p.press("ESCAPE");
+  expect(p.frame()).toContain("comentar 127.0.0.1"); // esc took it back to the form
+  await p.press("RETURN");
+  await p.press("RETURN");
   await until(p, (f) => f.includes("removido: 127.0.0.1"));
   expect(p.frame()).toContain("[2] IPs 1/12");
+});
+
+test("t brings the base IPs back; the row does the same", async () => {
+  const p = await open();
+  await p.press("2");
+  await p.press("RETURN");
+  await p.press("RETURN");
+  for (let i = 0; i < 3; i++) await p.press("TAB");
+  await p.press("RETURN");
+  await p.press("RETURN");
+  await until(p, (f) => f.includes("removido: 127.0.0.1"));
   await p.press("t");
   await until(p, (f) => f.includes("adicionados 1 IP(s) base"));
   expect(p.frame()).toContain("/13");
 });
 
-test("c edits the comment of the selected entry through the command", async () => {
+// ---- errors ----
+
+test("an error opens a result screen with the cause and stays until it is closed", async () => {
   const p = await open();
   await p.press("2");
-  await p.press("c");
-  expect(p.frame()).toContain("comentar 127.0.0.1");
-  await p.type("loop");
+  await p.press("a");
+  await p.type("203.0.113.7"); // the session's own IP
+  await p.press("TAB");
+  await p.press("ARROW_DOWN");
+  await p.press(" ");
   await p.press("s", { ctrl: true });
-  await until(p, (f) => f.includes("comentário atualizado: 127.0.0.1"));
-  expect(p.frame()).toContain("aceito · LOCALHOSTloop"); // the field starts with the current comment
+  const frame = await until(p, (f) => f.includes("erro (saiu 1)"));
+  expect(frame).toContain("contém o IP da sua sessão");
+  await p.flush();
+  expect(p.frame()).toContain("erro (saiu 1)"); // it does not go back by itself
+  await p.press("RETURN");
+  expect(p.frame()).toContain("[2] IPs");
+  expect(p.frame()).not.toContain("erro (saiu 1)");
 });
 
-test("A: shows the diff, the host confirms, then the countdown modal; enter confirms", async () => {
+// ---- apply ----
+
+test("A: reviews the diff, the host confirms, then the countdown; enter confirms the access", async () => {
   const p = await open();
   await p.press("A", { shift: true });
-  const review = await until(p, (f) => f.includes("o que muda"));
+  const review = await untilShows(p, "o que muda");
   expect(review).toContain("+ ip saddr 203.0.113.7 accept");
+  expect(review).toMatch(/um apply adicionaria \d+ e removeria 0 regra/);
   await p.press("RETURN");
-  await until(p, (f) => f.includes("confirmar `firewall apply`? s/N")); // the host asks first: apply is destructive
-  expect(stubs.calls().some((c) => c.startsWith("nft -f"))).toBe(false);
+  await untilShows(p, "confirmar `firewall apply`? s/N"); // the host asks first: apply is destructive
+  expect(nftWasLoaded()).toBe(false);
   await p.press("s");
-  const cd = await until(p, (f) => f.includes("ainda tem acesso? enter confirma"));
-  expect(cd).toMatch(/reversão automática em \d+s/);
-  expect(stubs.calls().some((c) => c.startsWith("systemd-run --on-active=60"))).toBe(true);
+  const countdown = await untilShows(p, "ainda tem acesso?");
+  expect(countdown).toMatch(/reversão automática em \d+s/);
+  expect(anyCall("systemd-run --on-active=60")).toBe(true);
   await p.press("RETURN");
-  await until(p, (f) => f.includes("apply confirmado"));
+  await untilShows(p, "apply confirmado");
   expect(stubs.calls()).toContain("systemctl stop pvx-firewall-revert.timer");
-  expect(p.frame()).toContain("status: ATIVO");
+  expect((await untilShows(p, "status: ATIVO"))).toContain("status: ATIVO");
 });
 
 test("A then n cancels without touching the firewall", async () => {
   const p = await open();
   await p.press("A", { shift: true });
-  await until(p, (f) => f.includes("o que muda"));
+  await untilShows(p, "o que muda");
   await p.press("n");
   expect(p.frame()).toContain("[1] status");
-  expect(stubs.calls().some((c) => c.startsWith("nft -f"))).toBe(false);
+  expect(nftWasLoaded()).toBe(false);
 });
 
-test("80x24 still shows the three panels", async () => {
-  const p = await open(80, 24);
-  for (const s of ["[1] status", "[2] IPs", "[3] portas"]) expect(p.frame()).toContain(s);
+test("A then esc also cancels", async () => {
+  const p = await open();
+  await p.press("A", { shift: true });
+  await untilShows(p, "o que muda");
+  await p.press("ESCAPE");
+  expect(p.frame()).toContain("[1] status");
+  expect(nftWasLoaded()).toBe(false);
 });
