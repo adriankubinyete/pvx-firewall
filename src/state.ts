@@ -79,14 +79,17 @@ export const load = (s: { get<T>(k: string): T | undefined }): FwState => s.get<
 export const isIp = (l: ListName) => l === "ipAccept" || l === "ipDeny";
 export const norm = (l: ListName, v: string) => (isIp(l) ? normCidr(v) : normPort(v));
 
-/** Adds, or updates the comment of an existing entry. */
-export function addEntry(st: FwState, list: ListName, value: string, comment: string, source: Source, by: string, at = new Date().toISOString()): "added" | "updated" | "unchanged" {
+/**
+ * Adds, or updates the comment of an existing entry. An empty comment keeps the
+ * existing one, unless `replace` is set (editing): then it is stored as given.
+ */
+export function addEntry(st: FwState, list: ListName, value: string, comment: string, source: Source, by: string, at = new Date().toISOString(), replace = false): "added" | "updated" | "unchanged" {
   const cur = st[list].find((e) => e.value === value);
   if (!cur) {
     st[list].push({ value, comment, source, addedBy: by, at });
     return "added";
   }
-  if (comment && comment !== cur.comment) {
+  if ((replace || comment) && comment !== cur.comment) {
     cur.comment = comment;
     return "updated";
   }

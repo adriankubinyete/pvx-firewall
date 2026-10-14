@@ -51,6 +51,7 @@ const addCmd = (list: ListName, help: string): CommandDef => ({
   args: [
     { name: "value", help: isIp(list) ? "IP ou CIDR, separados por vírgula" : "porta (5060/udp, 10000-20000/tcp, 80 = tcp e udp), separadas por vírgula", kind: "positional", required: true },
     { name: "comment", help: "Comentário", kind: "option" },
+    { name: "replace-comment", help: "Substitui o comentário pelo valor dado (vazio apaga)", kind: "flag" },
   ],
   async run(ctx) {
     const st = load(ctx.store);
@@ -67,7 +68,7 @@ const addCmd = (list: ListName, help: string): CommandDef => ({
         ctx.out.error(`recusado: ${v} contém o IP da sua sessão (${session})`);
         continue;
       }
-      const r = addEntry(st, list, v, str(ctx, "comment") ?? "", "manual", actor());
+      const r = addEntry(st, list, v, str(ctx, "comment") ?? "", "manual", actor(), undefined, flag(ctx, "replace-comment"));
       if (r !== "unchanged") changed = true;
       ctx.out.success(r === "added" ? `adicionado: ${v}` : r === "updated" ? `comentário atualizado: ${v}` : `já estava na lista: ${v}`);
       if (st[opposite].some((e) => e.value === v)) ctx.out.warning(`${v} também está na lista oposta (${opposite}); o bloqueio vence`);

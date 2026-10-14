@@ -62,6 +62,20 @@ test("addEntry: add, comment update, unchanged", () => {
   expect(st.ipAccept.filter((e) => e.value === "203.0.113.9")).toHaveLength(1);
 });
 
+test("addEntry: an empty comment adds without one and keeps an existing one; replace stores the comment as given", () => {
+  const st = seed();
+  expect(addEntry(st, "ipAccept", "203.0.113.9", "", "manual", "ana")).toBe("added");
+  expect(st.ipAccept.at(-1)!.comment).toBe("");
+  addEntry(st, "portAccept", "8080/tcp", "web", "manual", "ana");
+  expect(addEntry(st, "portAccept", "8080/tcp", "", "manual", "ana")).toBe("unchanged");
+  expect(st.portAccept.at(-1)!.comment).toBe("web");
+  expect(addEntry(st, "portAccept", "8080/tcp", "", "manual", "ana", undefined, true)).toBe("updated"); // edit: empty clears
+  expect(st.portAccept.at(-1)!.comment).toBe("");
+  expect(addEntry(st, "portAccept", "8080/tcp", "", "manual", "ana", undefined, true)).toBe("unchanged");
+  expect(addEntry(st, "portAccept", "8080/tcp", "novo", "manual", "ana", undefined, true)).toBe("updated");
+  expect(st.portAccept.at(-1)!.comment).toBe("novo");
+});
+
 test("deniedBy and keyOf", () => {
   const st = seed();
   addEntry(st, "ipDeny", "198.51.100.0/24", "", "manual", "t");

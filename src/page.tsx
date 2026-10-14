@@ -3,20 +3,39 @@
 /** @jsxFrag Fragment */
 // The Firewall tab: [1] status, [2] IPs, [3] portas. Only `sdk.ui`: no React import. Every change is one of the module's
 // own commands (useCommand), so it lands in the scrollback, the history and the audit.
-import type { CommandRun, Sdk, Tone } from "@pvx/sdk";
-import { load, type Entry, type ListName } from "./state.ts";
+import type { CommandRun, ListColumn, Sdk, Tone } from "@pvx/sdk";
+import { load, missingBase, norm, type Entry, type ListName } from "./state.ts";
 
 interface Row {
   id: string;
+  kind: "entry";
   list: ListName;
   entry: Entry;
 }
+/** A selectable row that acts instead of editing. */
+interface Btn {
+  id: string;
+  kind: "btn";
+  act: "add" | "trust";
+  label: string;
+}
+type Pick = Row | Btn;
 type PanelId = "status" | "ips" | "portas";
 type Mode = { k: "main" } | { k: "form"; kind: "ip" | "port"; edit?: Row } | { k: "review"; lines: { text: string; tone: Tone }[] } | { k: "busy"; text: string } | { k: "countdown" };
 
 const CHROME = 6;
 const WIDE = 100;
-const MARK: Record<string, string> = { base: "B", asterisk: "A", manual: "M" };
+// Where an entry came from: the module's base list, the Asterisk config, or added by hand.
+const ORIGIN: Record<string, string> = { base: "base", asterisk: "asterisk", manual: "manual" };
+// Fixed widths for the short columns; the comment grows and takes the shrink, so a narrow panel only cuts the comment.
+const columnsOf = (value: string): ListColumn[] => [
+  { id: "origin", title: "origem", width: 8 },
+  { id: "value", title: value, width: value === "endereço" ? 18 : 16 },
+  { id: "action", title: "ação", width: 8 },
+  { id: "comment", title: "comentário", grow: 1 },
+];
+const IP_COLUMNS = columnsOf("endereço");
+const PORT_COLUMNS = columnsOf("porta");
 const toneOf = (kind: string): Tone => (kind === "success" ? "ok" : kind === "warning" ? "warn" : kind === "error" ? "error" : kind === "info" ? "info" : "text");
 
 /** The first thing worth saying about a command run. */
@@ -26,7 +45,7 @@ const headline = (r: CommandRun): { text: string; tone: Tone } => {
 };
 
 export function page(sdk: Sdk) {
-  const { h, Fragment, Panel, Row: Side, Text, List, Fields, useState, useEffect, useMemo, useStore, useCommand, useKey, useBack, useNudge, usePanels, useTheme, useViewport } = sdk.ui;
+  const { h, Fragment, Panel, Row: Side, Text, List, Fields, useState, useEffect, useMemo, useRef, useStore, useCommand, useKey, useBack, useNudge, usePanels, useTheme, useViewport, usePageFocused } = sdk.ui;
 
   function Key({ keys, label, run, help }: { keys: string; label: string; run: () => void; help?: boolean }) {
     useKey(keys, label, run, help ? { help: true } : undefined);
@@ -39,12 +58,8 @@ export function page(sdk: Sdk) {
     return <>{shown.map((l, i) => <Text key={i} tone={l.tone}>{l.text}</Text>)}</>;
   }
 
-  /** `cap` rows around the selected one. */
-  const windowed = (rows: Row[], sel: string | undefined, cap: number) => {
-    const i = Math.max(0, rows.findIndex((r) => r.id === sel));
-    const start = Math.max(0, Math.min(i - Math.floor(cap / 2), rows.length - cap));
-    return rows.slice(start, start + cap);
-  };
+  /** The first row of a `cap`-row window that keeps `i` visible, moving only when the selection leaves it (so hovering a row never shifts the rows under the mouse). */
+  const windowStart = (prev: number, i: number, cap: number, total: number) => Math.max(0, Math.min(i < prev ? i : i >= prev + cap ? i - cap + 1 : prev, total - cap));
 
   function Countdown({ deadline, onConfirm, onClose }: { deadline: number; onConfirm: () => void; onClose: () => void }) {
     const [now, setNow] = useState(Date.now());
@@ -64,18 +79,27 @@ export function page(sdk: Sdk) {
     );
   }
 
-  function Form({ kind, edit, onSubmit, onCancel }: { kind: "ip" | "port"; edit?: Row; onSubmit: (v: Record<string, string | boolean>) => void; onCancel: () => void }) {
-    const fields = edit
-      ? [{ id: "comment", label: "comentário", kind: "line" as const }]
-      : [
-          { id: "value", label: kind === "ip" ? "IP ou CIDR" : "porta (5060/udp, 10000-20000/tcp)", kind: "line" as const },
-          { id: "comment", label: "comentário", kind: "line" as const },
-          { id: "deny", label: "bloquear em vez de aceitar", kind: "toggle" as const },
-        ];
+  function Form({ kind, edit, onSubmit, onCancel, onDelete }: { kind: "ip" | "port"; edit?: Row; onSubmit: (v: Record<string, string | boolean>) => void; onCancel: () => void; onDelete: (r: Row) => void }) {
+    const ip = kind === "ip";
+    const fields = [
+      { id: "value", label: ip ? "IP ou CIDR" : "porta ou faixa", kind: "line" as const },
+      { id: "comment", label: "comentário", kind: "line" as const },
+      { id: "deny", label: "bloquear", kind: "toggle" as const, text: "em vez de aceitar" },
+    ];
+    // The commands' own parsers, so a bad value is caught before submit.
+    const validate = (v: Record<string, string | boolean>) => {
+      const toks = String(v.value ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+      if (!toks.length) return { value: ip ? "informe o IP ou CIDR" : "informe a porta ou faixa" };
+      if (edit && toks.length > 1) return { value: "edite um valor por vez" };
+      const bad = toks.find((t) => !norm(ip ? "ipAccept" : "portAccept", t));
+      if (bad) return { value: ip ? `IP ou CIDR inválido: ${bad}` : `porta inválida: ${bad}` };
+    };
+    const initial = edit ? { value: edit.entry.value, comment: edit.entry.comment, deny: edit.list.endsWith("Deny") } : undefined;
     return (
       <Panel>
-        <Panel title={edit ? `comentar ${edit.entry.value}` : kind === "ip" ? "adicionar IP" : "adicionar porta"} tone="accent">
-          <Fields fields={fields} initial={edit ? { comment: edit.entry.comment } : undefined} onSubmit={onSubmit} onCancel={onCancel} />
+        <Panel title={edit ? `editar ${edit.entry.value}` : ip ? "adicionar IP" : "adicionar porta"} tone="accent">
+          {ip ? null : <Text tone="dim">5060/udp · 10000-20000/tcp · 80 vale tcp e udp</Text>}
+          <Fields fields={fields} initial={initial} validate={validate} onSubmit={onSubmit} onCancel={onCancel} onDelete={edit ? () => onDelete(edit) : undefined} />
         </Panel>
       </Panel>
     );
@@ -85,7 +109,9 @@ export function page(sdk: Sdk) {
     const store = useStore();
     const nudge = useNudge();
     const { cols, rows } = useViewport();
-    const { g } = useTheme();
+    // False while the tab bar owns the keys: no panel is drawn focused then (accent, ●, row cursor, marquee).
+    const focused = usePageFocused();
+    const { c: c0, g } = useTheme();
     const [mode, setMode] = useState<Mode>({ k: "main" });
     const nav = usePanels();
     const [at, setAt] = useState<{ panel: PanelId; inside: boolean }>({ panel: "status", inside: false });
@@ -94,6 +120,14 @@ export function page(sdk: Sdk) {
     const [note, setNote] = useState<{ text: string; tone: Tone } | null>(null);
     const [status, setStatus] = useState<{ text: string; tone: Tone }[] | null>(null);
     const [now, setNow] = useState(Date.now());
+    // A mouse down bubbles from a button row to its panel: the button marks the hit so the panel's onPress does not undo it.
+    const rowHit = useRef(0);
+    const top = useRef({ ip: 0, port: 0 });
+    const [overBtn, setOverBtn] = useState<string | undefined>(undefined);
+    const clickPanel = (panel: PanelId) => () => {
+      if (Date.now() - rowHit.current < 100) return void (rowHit.current = 0);
+      setAt({ panel, inside: false });
+    };
 
     const cStatus = useCommand("firewall status");
     const cCheck = useCommand("firewall check");
@@ -124,9 +158,17 @@ export function page(sdk: Sdk) {
     }, [pending?.deadline]);
 
     const st = useMemo(() => load(store), [ver]);
-    const ipRows: Row[] = [...st.ipAccept.map((e) => ({ id: `ipAccept:${e.value}`, list: "ipAccept" as ListName, entry: e })), ...st.ipDeny.map((e) => ({ id: `ipDeny:${e.value}`, list: "ipDeny" as ListName, entry: e }))];
-    const portRows: Row[] = [...st.portAccept.map((e) => ({ id: `portAccept:${e.value}`, list: "portAccept" as ListName, entry: e })), ...st.portDeny.map((e) => ({ id: `portDeny:${e.value}`, list: "portDeny" as ListName, entry: e }))];
-    const cur = (rs: Row[], id?: string) => rs.find((r) => r.id === id) ?? rs[0];
+    const rowOf = (list: ListName) => (e: Entry): Row => ({ id: `${list}:${e.value}`, kind: "entry", list, entry: e });
+    const miss = missingBase(st).length > 0;
+    // Entries first, then the button rows at the end of the list.
+    const ipRows: Pick[] = [
+      ...st.ipAccept.map(rowOf("ipAccept")),
+      ...st.ipDeny.map(rowOf("ipDeny")),
+      { id: "btn:add", kind: "btn", act: "add", label: "+ adicionar IP" },
+      ...(miss ? [{ id: "btn:trust", kind: "btn", act: "trust", label: "◆ confiar nos IPs da Phonevox" } as Btn] : []),
+    ];
+    const portRows: Pick[] = [...st.portAccept.map(rowOf("portAccept")), ...st.portDeny.map(rowOf("portDeny")), { id: "btn:add", kind: "btn", act: "add", label: "+ adicionar porta" }];
+    const cur = (rs: Pick[], id?: string) => rs.find((r) => r.id === id) ?? rs[0];
 
     const after = (r: CommandRun) => {
       setNote(headline(r));
@@ -138,16 +180,21 @@ export function page(sdk: Sdk) {
 
     const submit = async (kind: "ip" | "port", edit: Row | undefined, v: Record<string, string | boolean>) => {
       const comment = String(v.comment ?? "").trim();
-      const args = (value: string) => [value, ...(comment ? ["--comment", comment] : [])];
-      if (edit) {
-        setMode({ k: "main" });
-        return after(await byList[edit.list].run({ args: args(edit.entry.value) }));
-      }
+      // Editing commits the comment as submitted: --replace-comment makes an empty one clear it.
+      const args = (value: string, c = comment, replace = false) => [value, ...(c ? ["--comment", c] : []), ...(replace ? ["--replace-comment"] : [])];
       const value = String(v.value ?? "").trim();
-      if (!value) return nudge("informe o valor");
-      setMode({ k: "main" });
       const list: ListName = kind === "ip" ? (v.deny ? "ipDeny" : "ipAccept") : v.deny ? "portDeny" : "portAccept";
-      after(await byList[list].run({ args: args(value) }));
+      setMode({ k: "main" });
+      if (!edit) return after(await byList[list].run({ args: args(value) }));
+      const next = norm(list, value) ?? value;
+      const key = kind === "ip" ? "ip" : "port";
+      if (next === edit.entry.value && list === edit.list) return after(await byList[list].run({ args: args(next, comment, true) }));
+      // A new value or list is a remove plus an add; if the add fails the old entry comes back.
+      await remover[edit.list].run({ args: [edit.entry.value] });
+      const r = await byList[list].run({ args: args(next, comment, true) });
+      if (r.exit !== 0 || r.lines.some((l) => l.kind === "error")) await byList[edit.list].run({ args: args(edit.entry.value, edit.entry.comment) });
+      else setSel((s) => ({ ...s, [key]: `${list}:${next}` }));
+      after(r);
     };
 
     const review = async () => {
@@ -173,10 +220,11 @@ export function page(sdk: Sdk) {
 
     const body = Math.max(4, rows - CHROME - 1);
     const wide = cols >= WIDE;
-    const listCap = Math.max(2, wide ? body - 8 - 2 : Math.floor((body - 8) / 2) - 2);
+    // One row less than before: the column header takes a line.
+    const listCap = Math.max(2, (wide ? body - 8 - 2 : Math.floor((body - 8) / 2) - 2) - 1);
 
     if (mode.k === "form")
-      return <Form kind={mode.kind} edit={mode.edit} onSubmit={(v) => void submit(mode.kind, mode.edit, v)} onCancel={() => setMode({ k: "main" })} />;
+      return <Form kind={mode.kind} edit={mode.edit} onSubmit={(v) => void submit(mode.kind, mode.edit, v)} onCancel={() => setMode({ k: "main" })} onDelete={(r) => { setMode({ k: "main" }); void rm(r); }} />;
     if (mode.k === "busy")
       return <Panel><Text tone="dim">{mode.text}</Text></Panel>;
     if (mode.k === "countdown")
@@ -205,27 +253,66 @@ export function page(sdk: Sdk) {
         </Panel>
       );
 
-    const movement = (rs: Row[], key: "ip" | "port", dir: 1 | -1) => {
+    /** The only remove path: `x` and the edit form's [ remover ] both come here. */
+    async function rm(r: Row) {
+      const rs = r.list.startsWith("ip") ? ipRows : portRows;
+      const key = r.list.startsWith("ip") ? "ip" : "port";
+      const i = rs.findIndex((x) => x.id === r.id);
+      const near = rs[i + 1] ?? rs[i - 1];
+      if (near) setSel((s) => ({ ...s, [key]: near.id }));
+      after(await remover[r.list].run({ args: [r.entry.value] }));
+    }
+    const act = async (c: Pick, key: "ip" | "port") => {
+      if (c.kind === "entry") return setMode({ k: "form", kind: key, edit: c });
+      if (c.act === "add") return setMode({ k: "form", kind: key });
+      setSel((s) => ({ ...s, ip: "btn:add" }));
+      after(await cTrust.run());
+    };
+    const movement = (rs: Pick[], key: "ip" | "port", dir: 1 | -1) => {
       const c = cur(rs, sel[key]);
       if (!c) return nudge("nada aqui");
-      const i = rs.indexOf(c) + dir;
-      if (i < 0) return nudge("início da lista");
-      if (i >= rs.length) return nudge("fim da lista");
-      setSel({ ...sel, [key]: rs[i]!.id });
+      setSel({ ...sel, [key]: rs[nav.wrap(rs.indexOf(c), dir, rs.length)]!.id }); // ↓ on the last row goes to the first, ↑ on the first to the last
     };
-    const listPanel = (n: 2 | 3, id: PanelId, title: string, rs: Row[], key: "ip" | "port") => {
+    const listPanel = (n: 2 | 3, id: PanelId, title: string, rs: Pick[], key: "ip" | "port") => {
       const c = cur(rs, sel[key]);
-      const here = at.panel === id;
-      const items = windowed(rs, c?.id, listCap).map((r) => ({
-        id: r.id,
-        label: r.entry.value,
-        detail: `${r.list.endsWith("Deny") ? "bloqueado" : "aceito"}${r.entry.comment ? ` · ${r.entry.comment}` : ""}`,
-        tone: (r.list.endsWith("Deny") ? "error" : undefined) as Tone | undefined,
-        mark: { text: MARK[r.entry.source] ?? "?", tone: (r.entry.source === "base" ? "dim" : r.entry.source === "asterisk" ? "info" : "accent") as Tone },
-      }));
+      const here = focused && at.panel === id;
+      const start = windowStart(top.current[key], Math.max(0, rs.indexOf(c!)), listCap, rs.length);
+      top.current[key] = start;
+      const shown = rs.slice(start, start + listCap);
+      const entries = rs.filter((r) => r.kind === "entry");
+      const items = shown.flatMap((r) => {
+        if (r.kind === "btn") return [];
+        const deny = r.list.endsWith("Deny");
+        return [{
+          id: r.id,
+          cells: {
+            origin: { text: ORIGIN[r.entry.source] ?? "?", tone: "dim" as Tone },
+            value: { text: r.entry.value, tone: deny ? ("error" as Tone) : undefined },
+            action: { text: deny ? "bloquear" : "aceitar", tone: (deny ? "error" : "accent") as Tone },
+            comment: r.entry.comment ?? "",
+          },
+        }];
+      });
+      const btns = shown.flatMap((r) => (r.kind === "btn" ? [r] : []));
+      const on = here && at.inside;
+      const count = !entries.length ? "0" : c?.kind === "entry" ? `${entries.indexOf(c) + 1}/${entries.length}` : `${entries.length}`;
+      // Click: focus the panel, go inside, select the row (and press it, for a button). Hover: moves the selection only in the active list, else it just tints.
+      const go = (rid: string) => { rowHit.current = Date.now(); setAt({ panel: id, inside: true }); setSel((s) => ({ ...s, [key]: rid })); };
+      const hover = (rid: string) => on && setSel((s) => (s[key] === rid ? s : { ...s, [key]: rid }));
+      const button = (b: Btn) => {
+        const hot = on && c?.id === b.id;
+        const tint = !hot && overBtn === `${id}:${b.id}`;
+        return h("box", {
+          key: b.id, flexShrink: 0, backgroundColor: hot ? c0.selected : tint ? c0.panel : undefined,
+          onMouseOver: () => { setOverBtn(`${id}:${b.id}`); hover(b.id); },
+          onMouseOut: () => setOverBtn((o) => (o === `${id}:${b.id}` ? undefined : o)),
+          onMouseDown: () => { go(b.id); void act(b, key); },
+        }, h("text", { wrapMode: "none" }, h("span", { fg: hot ? c0.accent : c0.dim }, hot ? `${g.cursor} ` : tint ? `${g.query} ` : "  "), h("span", { fg: c0.accent }, `  ${b.label}`)));
+      };
       return (
-        <Panel key={n} title={`[${n}] ${title} ${rs.length ? `${rs.indexOf(c!) + 1}/${rs.length}` : "0"}${here ? ` ${g.active}` : ""}`} tone={here ? "accent" : undefined} grow={wide} panelRef={nav.ref(id)}>
-          {rs.length ? <List items={items} selected={here && at.inside ? c?.id : undefined} /> : <Text tone="dim">vazio</Text>}
+        <Panel key={n} title={`[${n}] ${title} ${count}${here ? ` ${g.active}` : ""}`} tone={here ? "accent" : undefined} grow={wide} panelRef={nav.ref(id)} onPress={clickPanel(id)}>
+          {items.length ? <List items={items} columns={key === "ip" ? IP_COLUMNS : PORT_COLUMNS} selected={on && c?.kind === "entry" ? c.id : undefined} onPress={(rid) => go(rid)} onHover={(rid) => rid && hover(rid)} /> : entries.length ? null : <Text tone="dim">vazio</Text>}
+          {btns.map(button)}
         </Panel>
       );
     };
@@ -247,15 +334,9 @@ export function page(sdk: Sdk) {
       if (!st.act) setAt({ panel: st.panel as PanelId, inside: st.inside });
     };
     const jump = (panel: PanelId) => setAt({ panel, inside: false });
-    const edit = (rs: Row[], key: "ip" | "port") => {
-      const c = cur(rs, sel[key]);
-      return c ? setMode({ k: "form", kind: key, edit: c }) : nudge("nada aqui");
-    };
-    const rm = async (rs: Row[], key: "ip" | "port") => {
-      const c = cur(rs, sel[key]);
-      if (!c) return nudge("nada aqui");
-      after(await remover[c.list].run({ args: [c.entry.value] }));
-    };
+    const row = cur(rowsOf(at.panel), sel[listKey]);
+    // `e` and `x` only mean something on an entry; a button row ignores them.
+    const onEntry = (fn: (r: Row) => void) => () => void (row?.kind === "entry" && fn(row));
 
     return (
       <Panel>
@@ -268,9 +349,9 @@ export function page(sdk: Sdk) {
             <Key keys="↑" label="sobe" run={() => press("up")} help />
             <Key keys="↓" label="desce" run={() => press("down")} help />
             <Key keys="a" label="adiciona" run={() => setMode({ k: "form", kind: listKey })} />
-            <Key keys="x" label="remove" run={() => void rm(rowsOf(at.panel), listKey)} />
-            <Key keys="c" label="comenta" run={() => edit(rowsOf(at.panel), listKey)} />
-            {at.panel === "ips" ? <Key keys="t" label="trust-phonevox" run={async () => after(await cTrust.run())} /> : null}
+            <Key keys="e" label="editar" run={onEntry((r) => setMode({ k: "form", kind: listKey, edit: r }))} />
+            <Key keys="enter" label="ativa" run={() => row && void act(row, listKey)} help />
+            <Key keys="x" label="remove" run={onEntry((r) => void rm(r))} />
           </>
         ) : (
           <>
@@ -285,7 +366,7 @@ export function page(sdk: Sdk) {
             <Key keys="3" label="portas" run={() => jump("portas")} help />
           </>
         )}
-        <Panel title={`[1] status${at.panel === "status" ? ` ${g.active}` : ""}`} tone={at.panel === "status" ? "accent" : undefined} panelRef={nav.ref("status")}>
+        <Panel title={`[1] status${focused && at.panel === "status" ? ` ${g.active}` : ""}`} tone={focused && at.panel === "status" ? "accent" : undefined} panelRef={nav.ref("status")} onPress={clickPanel("status")}>
           <Lines lines={statusLines} max={6} />
         </Panel>
         {note ? <Text tone={note.tone}>{note.text}</Text> : <Text tone="dim"> </Text>}
