@@ -219,6 +219,17 @@ test("enter on a row edits its comment through the command", async () => {
   expect(p.frame()).toContain("LOCALHOSTlo"); // the field started with the current comment (the column cuts the rest)
 });
 
+test("editing with the comment field emptied clears the comment", async () => {
+  const p = await open();
+  await p.press("2");
+  await p.press("RETURN");
+  await p.press("RETURN");
+  for (let i = 0; i < "LOCALHOST".length; i++) await p.press("BACKSPACE");
+  await p.press("s", { ctrl: true });
+  await until(p, (f) => f.includes("comentário atualizado: 127.0.0.1"));
+  expect(p.frame()).not.toContain("LOCALHOST");
+});
+
 test("the form's remover button asks first, then removes through the command", async () => {
   const p = await open();
   await p.press("2");

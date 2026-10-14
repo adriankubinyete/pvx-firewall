@@ -69,3 +69,12 @@ test("the lists fingerprint changes with the values and is stable (it is saved i
   // The value of the seed as the first version computed it: a new algorithm would make every existing install say "as listas mudaram".
   expect(before).toBe("2aa2a4b2");
 });
+
+test("addEntry: an empty comment keeps an existing one; replace stores the comment as given", () => {
+  const st = seed();
+  addEntry(st, "portAccept", "8080/tcp", "web", "manual", "ana");
+  expect(addEntry(st, "portAccept", "8080/tcp", "", "manual", "ana")).toBe("unchanged");
+  expect(addEntry(st, "portAccept", "8080/tcp", "", "manual", "ana", undefined, true)).toBe("updated");
+  expect(st.portAccept.at(-1)!.comment).toBe("");
+  expect(addEntry(st, "portAccept", "8080/tcp", "novo", "manual", "ana", undefined, true)).toBe("updated");
+});

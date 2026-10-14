@@ -14,6 +14,8 @@ function applyArgs({ failsafeIp, force }: ApplyChoice): string[] {
 
 export interface FirewallCommands {
   addEntry(list: ListName, value: string, comment: string): Promise<CommandRun>;
+  /** Edits: the comment is stored as given, so an emptied field clears it. */
+  editComment(list: ListName, value: string, comment: string): Promise<CommandRun>;
   removeEntry(kind: EntryKind, value: string): Promise<CommandRun>;
   trustPhonevox(): Promise<CommandRun>;
   /** Destructive: the host asks for the confirmation before it runs. The command line it shows has the choice (`--force`, `--failsafe-ip`). */
@@ -38,6 +40,7 @@ export const makeCommands = ({ useCommand }: SdkUi) =>
 
     return {
       addEntry: (list, value, comment) => addCommandOf[list].run({ args: [value, ...(comment ? ["--comment", comment] : [])] }),
+      editComment: (list, value, comment) => addCommandOf[list].run({ args: [value, "--comment", comment, "--replace-comment"] }),
       removeEntry: (kind, value) => removeCommandOf[kind].run({ args: [value] }),
       trustPhonevox: () => trust.run(),
       apply: (choice) => apply.run({ args: applyArgs(choice) }),

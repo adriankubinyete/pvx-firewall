@@ -133,14 +133,17 @@ export function firstInvalidValue(list: ListName, text: string): string | undefi
 
 export type AddResult = "added" | "updated" | "unchanged";
 
-/** Adds, or updates the comment of an existing entry. */
-export function addEntry(state: FwState, list: ListName, value: string, comment: string, source: Source, addedBy: string, at = new Date().toISOString()): AddResult {
+/**
+ * Adds, or updates the comment of an existing entry. An empty comment keeps the
+ * existing one, unless `replace` is set (editing): then it is stored as given.
+ */
+export function addEntry(state: FwState, list: ListName, value: string, comment: string, source: Source, addedBy: string, at = new Date().toISOString(), replace = false): AddResult {
   const existing = state[list].find((entry) => entry.value === value);
   if (!existing) {
     state[list].push({ value, comment, source, addedBy, at });
     return "added";
   }
-  if (comment && comment !== existing.comment) {
+  if ((replace || comment) && comment !== existing.comment) {
     existing.comment = comment;
     return "updated";
   }

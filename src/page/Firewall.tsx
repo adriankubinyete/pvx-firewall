@@ -90,7 +90,7 @@ export function makeFirewall(ui: SdkUi) {
           <EntryForm
             target={screen.target}
             onAdd={({ list, value, comment }) => void perform("adicionando…", () => commands.addEntry(list, value, comment))}
-            onEditComment={(row, comment) => void perform("atualizando o comentário…", () => commands.addEntry(row.list, row.entry.value, comment))}
+            onEditComment={(row, comment) => void perform("atualizando o comentário…", () => commands.editComment(row.list, row.entry.value, comment))}
             onRemove={(row) => void perform("removendo…", () => commands.removeEntry(kindOfList(row.list), row.entry.value))}
             onCancel={backToMain}
           />

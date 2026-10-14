@@ -36,6 +36,7 @@ function addCommand(list: ListName, help: string): CommandDef {
     args: [
       { name: "value", help: isIp(list) ? IP_VALUE_HELP : PORT_VALUE_HELP, kind: "positional", required: true },
       { name: "comment", help: "Comentário", kind: "option" },
+      { name: "replace-comment", help: "Substitui o comentário pelo valor dado (vazio apaga)", kind: "flag" },
     ],
     run(ctx) {
       const state = load(ctx.store);
@@ -63,7 +64,7 @@ function addValue(ctx: CommandCtx, state: FwState, list: ListName, rawValue: str
     ctx.out.error(`recusado: ${value} contém o IP da sua sessão (${session})`);
     return false;
   }
-  const result = addEntry(state, list, value, ctx.option("comment") ?? "", "manual", actor());
+  const result = addEntry(state, list, value, ctx.option("comment") ?? "", "manual", actor(), undefined, ctx.flag("replace-comment"));
   ctx.out.success(ADDED_TEXT[result](value));
   const opposite = OPPOSITE_LIST[list];
   if (state[opposite].some((entry) => entry.value === value)) ctx.out.warning(`${value} também está na lista oposta (${opposite}); o bloqueio vence`);
