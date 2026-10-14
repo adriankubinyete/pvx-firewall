@@ -9,7 +9,7 @@ Módulo do pvx que gerencia o firewall de uma central: listas de IPs e portas, a
 3. **Comandos:**
    - `firewall status` (somente leitura): estado vivo; a primeira linha é `status: ATIVO|INATIVO N/M regra(s)`.
    - `firewall check` (somente leitura): diferença entre as regras vivas e as listas (o que um `apply` mudaria).
-   - `firewall apply [--force] [--no-rollback]` (destrutivo): guarda um snapshot, garante o IP da sessão SSH (`SSH_CLIENT`, senão `who -m`; sem IP e sem `--force` aborta), agenda a reversão e aplica.
+   - `firewall apply [--force] [--failsafe-ip <ip>] [--no-rollback]` (destrutivo): guarda um snapshot, garante o IP do failsafe (`--failsafe-ip`, senão o `ctx.session.sshClient` do host; sem IP e sem `--force` aborta), agenda a reversão e aplica.
    - `firewall confirm`: cancela a reversão automática. `firewall revert` (destrutivo): volta ao snapshot agora.
    - `firewall ip accept|deny <ip[,ip]> [--comment]`, `ip remove`, `ip list`; `firewall port accept|deny|remove|list` (`5060/udp`, `10000-20000/tcp`, `80` = tcp e udp). `ip deny` recusa o IP da sessão atual e qualquer faixa que o contenha.
    - `firewall ip trust-phonevox`: adiciona os IPs base da Phonevox que faltam.
@@ -22,7 +22,7 @@ Módulo do pvx que gerencia o firewall de uma central: listas de IPs e portas, a
    - Consultas: `firewall.missingBaseIps`, `firewall.status` (registro mais o engine vivo), `firewall.diff` (`{added, removed, session, missingBaseIps}`).
    - Widgets: `home.chips` (`firewall · <engine> · N regras`) e `home.attention` (IPs base que faltam, reversão pendente).
 5. **Estado que grava:** no `state.json` do módulo: `state` (quatro listas de `{value, comment, source: base|asterisk|manual, addedBy, at}`), `engine`, `zone`, `lastApply`, `pending`, `asterisk`. Em `$PVX_HOME/modules/firewall/state/`: `snapshots/restore.sh` (script `sh` que devolve as regras anteriores) e `rollback.pending` (marcador da reversão). Fora dali: `/etc/systemd/system/pvx-firewall.service`.
-6. **Permissões:** `exec`: `firewall-cmd`, `nft`, `iptables`, `iptables-save`, `iptables-restore`, `systemctl`, `systemd-run`, `asterisk`, `who`, `sh` (o `sh` roda o script de restauração e o fallback da reversão). `fs`: `rw:/etc/systemd/system/` (a unit) e `rw:$PVX_HOME/modules/firewall/state/` (snapshot e marcador). Nenhuma rede. Todo processo passa por `ctx.exec`.
+6. **Permissões:** `exec`: `firewall-cmd`, `nft`, `iptables`, `iptables-save`, `iptables-restore`, `systemctl`, `systemd-run`, `asterisk`, `sh` (o `sh` roda o script de restauração e o fallback da reversão). `fs`: `rw:/etc/systemd/system/` (a unit) e `rw:$PVX_HOME/modules/firewall/state/` (snapshot e marcador). Nenhuma rede. Todo processo passa por `ctx.shell`.
 7. **Depende de (`uses`):** nenhum módulo.
 
 ## Estrutura

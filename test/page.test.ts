@@ -1,15 +1,18 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { renderPage, type TuiHarness } from "@pvx/testing";
-import { installStubs, withSshSession, type Stubs } from "./stubs.ts";
+import { SSH_CLIENT_IP, installStubs, type Stubs } from "./stubs.ts";
 
 const moduleDir = join(import.meta.dir, "..");
 let page: TuiHarness | undefined;
 let stubs: Stubs;
 
-withSshSession();
+// The commands the page runs go through the host's session store, which reads the real `hostSession` (the harness cannot inject one
+// there). The host reads the environment first and remembers the answer, so this is set before anything asks.
+process.env.SSH_CLIENT = `${SSH_CLIENT_IP} 5555 22`;
+
 beforeEach(() => {
-  stubs = installStubs(["nft", "systemctl", "systemd-run", "who", "asterisk"]);
+  stubs = installStubs(["nft", "systemctl", "systemd-run", "asterisk"]);
 });
 afterEach(() => {
   page?.destroy();
@@ -30,8 +33,8 @@ const until = async (target: TuiHarness, matches: (frame: string) => boolean, ti
 const untilShows = (target: TuiHarness, text: string) => until(target, (frame) => frame.includes(text));
 
 /** The page, once the status query has answered. */
-const open = async (cols = 120, rows = 30) => {
-  page = await renderPage(moduleDir, "firewall", { cols, rows });
+const open = async (cols = 120, rows = 30, sshClient: string | undefined = SSH_CLIENT_IP) => {
+  page = await renderPage(moduleDir, "firewall", { cols, rows, sshClient });
   await untilShows(page, "status:");
   return page;
 };
@@ -42,7 +45,7 @@ const anyCall = (prefix: string) => stubs.calls().some((call) => call.startsWith
 // ---- layout ----
 
 test("three numbered panels; the status comes from a query, with a spinner while it loads", async () => {
-  page = await renderPage(moduleDir, "firewall", { cols: 120, rows: 30 });
+  page = await renderPage(moduleDir, "firewall", { cols: 120, rows: 30, sshClient: SSH_CLIENT_IP });
   expect(page.frame()).toContain("consultando o firewall…");
   const frame = await untilShows(page, "status: INATIVO");
   for (const text of ["[1] status ●", "[2] IPs 1/13", "[3] portas 1/20", "engine: nftables (auto)", "127.0.0.1"]) expect(frame).toContain(text);

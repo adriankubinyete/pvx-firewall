@@ -68,7 +68,7 @@ const listsChangedSinceApply = (proof: ProofKit, { listsMatchLastApply }: Summar
  */
 async function rulesMissingFromEngine(proof: ProofKit, ctx: ReadCtx, { lastApply, lists }: Summary): Promise<Proof | undefined> {
   if (!lastApply) return;
-  const resolved = await resolveEngine(ctx.exec, ctx.store);
+  const resolved = await resolveEngine(ctx);
   if (isEngineProblem(resolved)) return proof.error(resolved.error);
   const { engine, status } = resolved;
   if (!status.active) return noRulesLoaded(proof, engine.id, lastApply);

@@ -66,10 +66,10 @@ export const makeMainScreen = (ui: SdkUi) => {
     return null;
   }
 
+  /** `enter` is the List's own action (`onAction`), so only the arrows are mapped here. */
   function InsideKeys({ onKey }: { onKey: (key: Key) => void }) {
     useKey("↑", "sobe", () => onKey("up"), { help: true });
     useKey("↓", "desce", () => onKey("down"), { help: true });
-    useKey("enter", "abre", () => onKey("enter"));
     return null;
   }
 
@@ -120,8 +120,7 @@ export const makeMainScreen = (ui: SdkUi) => {
     };
 
     const runAction = (kind: EntryKind, action: ActionId) => (action === "add" ? onAdd(kind) : onTrust());
-    const openSelected = (panel: ListPanelId) => {
-      const id = selectedIdOf(panel);
+    const openRow = (panel: ListPanelId) => (id: string) => {
       const entry = rows[panel].entries.find((row) => row.id === id);
       if (entry) return onEdit(entry);
       const action = rows[panel].actions.find((row) => row.id === id);
@@ -137,7 +136,6 @@ export const makeMainScreen = (ui: SdkUi) => {
       const panel = step.panel;
       if (!isPanelId(panel)) return;
       if (isListPanel(panel) && step.move) moveSelection(panel, step.move);
-      else if (isListPanel(panel) && step.act) openSelected(panel);
       setFocus({ panel, inside: step.inside });
     };
     useBack(focus.inside ? () => setFocus({ ...focus, inside: false }) : undefined);
@@ -151,12 +149,8 @@ export const makeMainScreen = (ui: SdkUi) => {
     };
     const pressRow = (panel: ListPanelId) => (id: string) => {
       rowPressed.current = true;
-      const alreadyThere = focus.inside && focus.panel === panel && selectedIdOf(panel) === id;
       select(panel, id);
       setFocus({ panel, inside: true });
-      const action = rows[panel].actions.find((row) => row.id === id);
-      if (action) return runAction(KIND_OF_PANEL[panel], action.id);
-      if (alreadyThere) openSelected(panel);
     };
     // Hover moves the selection only in the list that has the focus (UI.md §2); elsewhere the List tints the row by itself.
     const hoverRow = (panel: ListPanelId) => (id: string | undefined) => {
@@ -180,6 +174,7 @@ export const makeMainScreen = (ui: SdkUi) => {
         panelRef={panels.ref(panel)}
         onPanelPress={pressPanel(panel)}
         onRowPress={pressRow(panel)}
+        onRowAction={openRow(panel)}
         onRowHover={hoverRow(panel)}
       />
     );

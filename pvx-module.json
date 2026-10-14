@@ -4,7 +4,7 @@
   "entry": "src/index.tsx",
   "pvx": ">=0.0.1",
   "permissions": {
-    "exec": ["firewall-cmd", "nft", "iptables", "iptables-save", "iptables-restore", "systemctl", "systemd-run", "asterisk", "who", "sh"],
+    "exec": ["firewall-cmd", "nft", "iptables", "iptables-save", "iptables-restore", "systemctl", "systemd-run", "asterisk", "sh"],
     "fs": ["rw:/etc/systemd/system/", "rw:$PVX_HOME/modules/firewall/state/"]
   },
   "contributes": {

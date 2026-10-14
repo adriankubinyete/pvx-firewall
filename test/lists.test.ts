@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { contains, normCidr, normPort, parseCidr, parsePort, sessionIp } from "../src/net.ts";
+import { contains, normCidr, normPort, parseCidr, parsePort, ipv4Of } from "../src/net.ts";
 import { BASE_IPS, addEntry, listsFingerprint, load, missingBase, removeEntry, seed } from "../src/state.ts";
 import { memStore } from "./fake.ts";
 
@@ -20,12 +20,11 @@ test("port specs", () => {
   for (const bad of ["0", "70000", "20-10", "80/icmp", "x", "80/"]) expect(parsePort(bad)).toBeUndefined();
 });
 
-test("session ip: SSH_CLIENT, then SSH_CONNECTION, then who -m", () => {
-  expect(sessionIp({ SSH_CLIENT: "203.0.113.7 5555 22" })).toBe("203.0.113.7");
-  expect(sessionIp({ SSH_CONNECTION: "203.0.113.8 5555 10.0.0.1 22" })).toBe("203.0.113.8");
-  expect(sessionIp({}, "root   pts/0   2026-10-13 10:00 (203.0.113.9)\n")).toBe("203.0.113.9");
-  expect(sessionIp({ SSH_CLIENT: "garbage" }, "root pts/0 (localhost)")).toBeUndefined();
-  expect(sessionIp({})).toBeUndefined();
+test("ipv4Of keeps a plain IPv4 and drops anything else (an IPv6 client has no failsafe rule)", () => {
+  expect(ipv4Of("203.0.113.7")).toBe("203.0.113.7");
+  expect(ipv4Of("2001:db8::1")).toBeUndefined();
+  expect(ipv4Of("garbage")).toBeUndefined();
+  expect(ipv4Of(undefined)).toBeUndefined();
 });
 
 test("the seed has the 13 base IPs and the default ports, all marked base", () => {

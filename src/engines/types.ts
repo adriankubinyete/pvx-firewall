@@ -1,20 +1,21 @@
-import type { ExecOpts, ExecResult, ModuleFs, Shell } from "@pvx/sdk";
+import type { ModuleFs, Shell } from "@pvx/sdk";
 
-export type ExecFn = (cmd: string, args?: string[], opts?: ExecOpts) => Promise<ExecResult>;
 export type EngineId = "firewalld" | "nftables" | "iptables";
 export type BootStatus = "enabled" | "disabled";
 
-/** What an engine needs from the host: `ctx.exec`, `ctx.shell` and `ctx.fs` (tests hand it fakes). */
+/** What an engine needs from the host: `ctx.shell` and `ctx.fs` (tests hand it fakes). */
 export interface Io {
-  exec: ExecFn;
   shell: Shell;
   fs: ModuleFs;
   /** firewalld zone; default `pvxfw`. */
   zone?: string;
 }
 
-/** What a probe needs: no file access, so a read-only context (a query, a proof) can ask an engine for its status. */
-export type ProbeIo = Pick<Io, "exec" | "zone">;
+/** What a probe needs: the read-only shell and no file access, so a query or a proof can ask an engine for its status. */
+export interface ProbeIo {
+  shell: Pick<Shell, "run" | "ok">;
+  zone?: string;
+}
 
 /** What the lists ask for. `failsafe` is the SSH client IP: it comes first and is never saved in the lists. */
 export interface Desired {
@@ -50,5 +51,5 @@ export interface Engine {
   restore(io: Io, scriptPath: string): Promise<void>;
   bootEnable(io: Io, pvxBin: string): Promise<void>;
   bootDisable(io: Io): Promise<void>;
-  bootStatus(io: Pick<Io, "exec">): Promise<BootStatus>;
+  bootStatus(io: Pick<ProbeIo, "shell">): Promise<BootStatus>;
 }

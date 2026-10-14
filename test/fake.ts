@@ -2,7 +2,10 @@
 import type { Shell } from "@pvx/sdk";
 import { createShell } from "@pvx/core";
 import { callLine, fakeFs, fakeReadCtx, fakeSdk, fakeSystem, memStore, type Call, type Reply } from "@pvx/testing";
-import type { Desired, ExecFn, Io } from "../src/engines/types.ts";
+import type { ApplyOptions } from "../src/apply.ts";
+import type { Desired, Io } from "../src/engines/types.ts";
+
+type ExecFn = Parameters<typeof createShell>[0];
 
 export { fakeFs, fakeReadCtx, fakeSdk, fakeSystem, memStore };
 export type { Call };
@@ -18,7 +21,10 @@ export const line = callLine;
 /** `ctx.shell` over a fake exec, as a command gets it. */
 export const shellOf = (exec: ExecFn): Shell => createShell(exec);
 
-export const io = (exec: ExecFn, fs = fakeFs(), zone?: string): Io => ({ exec, shell: shellOf(exec), fs, zone });
+export const io = (exec: ExecFn, fs = fakeFs(), zone?: string): Io => ({ shell: shellOf(exec), fs, zone });
+
+/** The options `applyFlow` needs, with the host's `describeFailure` (from the fake sdk) filled in. */
+export const applyOptions = (options: Omit<ApplyOptions, "describeFailure"> = {}): ApplyOptions => ({ describeFailure: fakeSdk().errors.describeFailure, ...options });
 
 export const sample: Desired = {
   ipAccept: ["127.0.0.1", "10.0.0.0/8", "203.0.113.9"],

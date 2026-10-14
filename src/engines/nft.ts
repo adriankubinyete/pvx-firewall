@@ -1,6 +1,6 @@
 // nftables: one table of our own (`ip pvx`), IPv4 only, replaced in a single transaction.
 // Other tables (docker, fail2ban...) are never touched.
-import { ok, run } from "../exec.ts";
+import { ok } from "../exec.ts";
 import { makeBoot } from "../boot.ts";
 import { available, canonicalAddress, restoreFromScript, unavailable } from "./common.ts";
 import { renderRules, type RuleFormat } from "./rules.ts";
@@ -45,7 +45,7 @@ export const parseListing = (output: string): string[] => {
   return chainRules;
 };
 
-const listOurTable = (exec: ProbeIo["exec"]) => run(exec, "nft", ["list", "table", "ip", "pvx"]);
+const listOurTable = (io: ProbeIo) => io.shell.run("nft", ["list", "table", "ip", "pvx"]);
 
 export const nftables: Engine = {
   id: "nftables",
@@ -54,16 +54,16 @@ export const nftables: Engine = {
   failsafeRule: FORMAT.failsafe,
   restore: restoreFromScript,
   async status(io: ProbeIo): Promise<EngineStatus> {
-    const version = await run(io.exec, "nft", ["--version"]);
+    const version = await io.shell.run("nft", ["--version"]);
     if (!ok(version)) return unavailable("nft não encontrado");
-    const listing = await listOurTable(io.exec);
+    const listing = await listOurTable(io);
     return available(ok(listing) ? parseListing(listing.stdout) : []);
   },
   async apply(io, desired) {
     await io.shell.must("nft", ["-f", "-"], { stdin: script(desired) });
   },
   async snapshot(io) {
-    const listing = await listOurTable(io.exec);
+    const listing = await listOurTable(io);
     // There was no table: undoing means removing ours.
     if (!ok(listing)) return "#!/bin/sh\nnft delete table ip pvx 2>/dev/null || true\n";
     return `#!/bin/sh\nnft -f - <<'PVX_EOF'\nadd table ip pvx\ndelete table ip pvx\n${listing.stdout.trim()}\nPVX_EOF\n`;

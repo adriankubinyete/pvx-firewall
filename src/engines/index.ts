@@ -1,11 +1,12 @@
-import type { Store } from "@pvx/sdk";
-import { run } from "../exec.ts";
+import type { ReadCtx, Store } from "@pvx/sdk";
 import { STORE_KEY } from "../state.ts";
 import { engineUnavailable } from "../texts.ts";
 import { firewalld } from "./firewalld.ts";
 import { iptables } from "./iptables.ts";
 import { nftables } from "./nft.ts";
-import type { Engine, EngineId, EngineStatus, ExecFn } from "./types.ts";
+import type { Engine, EngineId, EngineStatus } from "./types.ts";
+
+type ReadShell = ReadCtx["shell"];
 
 export const ENGINES: Record<EngineId, Engine> = { firewalld, nftables, iptables };
 export const SETTINGS = ["auto", "firewalld", "nftables", "iptables"] as const;
@@ -13,13 +14,31 @@ export type EngineSetting = (typeof SETTINGS)[number];
 
 export const isEngineSetting = (name: string): name is EngineSetting => (SETTINGS as readonly string[]).includes(name);
 
-/** `auto`: firewalld when its service is active (it owns nft), else nftables when `nft` exists, else iptables. */
-export async function pickEngine(exec: ExecFn, setting: EngineSetting = "auto"): Promise<{ engine: Engine; auto: boolean } | { error: string }> {
-  if (setting !== "auto") return { engine: ENGINES[setting], auto: false };
-  if ((await run(exec, "systemctl", ["is-active", "firewalld"])).stdout.trim() === "active") return { engine: firewalld, auto: true };
-  if ((await run(exec, "nft", ["--version"])).code === 0) return { engine: nftables, auto: true };
-  if ((await run(exec, "iptables", ["--version"])).code === 0) return { engine: iptables, auto: true };
-  return { error: "engine indisponível: nem firewalld ativo, nem nft, nem iptables neste host" };
+/** The engines `auto` tries, in order; `pickEngine` hands them to the host's `strategy.pick`. */
+function engineStrategies(shell: ReadShell) {
+  return [
+    { id: "firewalld", engine: firewalld, available: () => firewalldIsRunning(shell) },
+    { id: "nftables", engine: nftables, available: () => shell.ok("nft", ["--version"]) },
+    { id: "iptables", engine: iptables, available: () => shell.ok("iptables", ["--version"]) },
+  ];
+}
+
+/** firewalld owns nft when its service is active, so it wins over a plain `nft`. */
+async function firewalldIsRunning(shell: ReadShell): Promise<boolean> {
+  const service = await shell.run("systemctl", ["is-active", "firewalld"]);
+  return service.stdout.trim() === "active";
+}
+
+const NO_ENGINE_MESSAGE = "engine indisponível: nem firewalld ativo, nem nft, nem iptables neste host";
+
+/** What picking an engine needs: the probes (`shell`) and the host's `strategy.pick`. A command and a read-only context both have them. */
+export type PickDeps = Pick<ReadCtx, "shell" | "strategy">;
+
+/** `auto`: firewalld when its service is active, else nftables when `nft` exists, else iptables. */
+export async function pickEngine(deps: PickDeps, setting: EngineSetting = "auto"): Promise<{ engine: Engine; auto: boolean } | { error: string }> {
+  const picked = await deps.strategy.pick(engineStrategies(deps.shell), { setting, none: NO_ENGINE_MESSAGE });
+  if ("error" in picked) return picked;
+  return { engine: picked.strategy.engine, auto: picked.auto };
 }
 
 /** The setting the technician chose with `firewall engine` (`auto` by default). */
@@ -35,10 +54,10 @@ export interface ResolvedEngine {
 }
 
 /** The engine to drive and its live status, or the user-facing reason it cannot be driven. */
-export async function resolveEngine(exec: ExecFn, store: Pick<Store, "get">): Promise<ResolvedEngine | { error: string }> {
-  const picked = await pickEngine(exec, engineSettingOf(store));
+export async function resolveEngine(deps: PickDeps & { store: Pick<Store, "get"> }): Promise<ResolvedEngine | { error: string }> {
+  const picked = await pickEngine(deps, engineSettingOf(deps.store));
   if ("error" in picked) return picked;
-  const status = await picked.engine.status({ exec, zone: zoneOf(store) });
+  const status = await picked.engine.status({ shell: deps.shell, zone: zoneOf(deps.store) });
   if (!status.available) return { error: engineUnavailable(picked.engine.id, status.reason) };
   return { engine: picked.engine, auto: picked.auto, status };
 }

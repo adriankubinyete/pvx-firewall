@@ -1,7 +1,6 @@
 // start-on-boot: a oneshot unit that reapplies the lists. Its ExecStart MUST be a real command of this module
 // (the Python unit called `firewall sync`, which never existed; test/boot.test.ts ties the two).
-import { run } from "./exec.ts";
-import type { BootStatus, EngineId, Io } from "./engines/types.ts";
+import type { BootStatus, EngineId, Io, ProbeIo } from "./engines/types.ts";
 
 export const UNIT_NAME = "pvx-firewall.service";
 export const UNIT_PATH = `/etc/systemd/system/${UNIT_NAME}`;
@@ -39,8 +38,8 @@ export const makeBoot = (engine: EngineId) => ({
     await io.fs.remove(UNIT_PATH);
     await io.shell.run("systemctl", ["daemon-reload"]);
   },
-  async bootStatus(io: Pick<Io, "exec">): Promise<BootStatus> {
-    const result = await run(io.exec, "systemctl", ["is-enabled", UNIT_NAME]);
+  async bootStatus(io: Pick<ProbeIo, "shell">): Promise<BootStatus> {
+    const result = await io.shell.run("systemctl", ["is-enabled", UNIT_NAME]);
     return result.stdout.trim() === "enabled" ? "enabled" : "disabled";
   },
 });

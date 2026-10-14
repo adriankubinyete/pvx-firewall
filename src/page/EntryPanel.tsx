@@ -19,6 +19,8 @@ export interface EntryPanelProps {
   panelRef: unknown;
   onPanelPress: () => void;
   onRowPress: (id: string) => void;
+  /** `enter` on the selected row, or a second click on it; a click on an action row runs it at once. */
+  onRowAction: (id: string) => void;
   onRowHover: (id: string | undefined) => void;
 }
 
@@ -31,9 +33,9 @@ export const makeEntryPanel = ({ h, Panel, List, Text, useTheme }: SdkUi): Compo
     const hasEntries = rows.entries.length > 0;
     return (
       <Panel title={title} tone={props.panelFocused ? "accent" : undefined} grow={props.grow} shrink panelRef={props.panelRef} onPress={props.onPanelPress}>
-        {capacity > 0 && hasEntries ? <List items={rows.entries.map(entryItem)} columns={LIST_COLUMNS} selected={selected} maxRows={capacity} onPress={props.onRowPress} onHover={props.onRowHover} /> : null}
+        {capacity > 0 && hasEntries ? <List items={rows.entries.map(entryItem)} columns={LIST_COLUMNS} selected={selected} maxRows={capacity} onPress={props.onRowPress} onHover={props.onRowHover} onAction={props.onRowAction} actionOnClick={false} /> : null}
         {capacity > 0 && !hasEntries ? <Text tone="dim">—</Text> : null}
-        {capacity > 0 ? <List items={rows.actions.map(actionItem)} selected={selected} onPress={props.onRowPress} onHover={props.onRowHover} /> : null}
+        {capacity > 0 ? <List items={rows.actions.map(actionItem)} selected={selected} onPress={props.onRowPress} onHover={props.onRowHover} onAction={props.onRowAction} /> : null}
       </Panel>
     );
   };

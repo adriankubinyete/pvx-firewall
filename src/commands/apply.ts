@@ -1,8 +1,9 @@
 // `status`, `check`, `apply`, `confirm`, `revert`: reading the firewall and putting the lists on it.
 // The flow of an apply (snapshot, failsafe, scheduled revert, load, verify) is in ../apply.ts.
-import type { CommandCtx, CommandDef } from "@pvx/sdk";
+import type { CommandCtx, CommandDef, ErrorsKit } from "@pvx/sdk";
 import { applyFlow } from "../apply.ts";
 import { isEngineProblem, readDiff, readLiveStatus, type DiffView, type LiveStatus } from "../health/summary.ts";
+import { ipToInt, ipv4Of } from "../net.ts";
 import { ROLLBACK_SECONDS, cancel, describePending, paths, pendingInfo } from "../rollback.ts";
 import { clearApplyState, clearPending } from "../state.ts";
 import { FIX } from "../texts.ts";
@@ -38,7 +39,7 @@ const status: CommandDef = {
 
 function reportDiff(ctx: CommandCtx, diff: DiffView): void {
   if (diff.missingBaseIps.length) ctx.out.warning(`faltam ${diff.missingBaseIps.length} IP(s) base da Phonevox: ${diff.missingBaseIps.join(", ")} (${FIX.trustPhonevox})`);
-  if (!diff.session) ctx.out.warning("IP da sessão desconhecido: o apply exigirá --force");
+  if (!diff.session) ctx.out.warning("IP da sessão desconhecido: o apply exigirá --failsafe-ip <ip> ou --force");
   if (!diff.added.length && !diff.removed.length) {
     ctx.out.success("as regras vivas batem com as listas");
     return;
@@ -63,17 +64,32 @@ const check: CommandDef = {
 
 // ---- apply ----
 
-const apply: CommandDef = {
+/** The text of `--failsafe-ip` is not an IPv4 (a range would open the whole network, so only one address is accepted). */
+const invalidFailsafeIp = (given: string | undefined): given is string => given !== undefined && ipToInt(given) === undefined;
+
+const apply = (errors: ErrorsKit): CommandDef => ({
   help: `Aplica as listas; reverte sozinho em ${ROLLBACK_SECONDS}s se você não rodar ${FIX.confirm}`,
   destructive: true,
   args: [
     { name: "force", help: "Aplica mesmo sem IP de sessão (sem failsafe)", kind: "flag" },
+    { name: "failsafe-ip", help: "IP que fica liberado como failsafe (padrão: o IP da sessão SSH)", kind: "option" },
     { name: "no-rollback", help: "Não agenda a reversão automática", kind: "flag" },
   ],
   async run(ctx) {
+    const given = ctx.option("failsafe-ip");
+    if (invalidFailsafeIp(given)) {
+      ctx.out.error(`IP inválido em --failsafe-ip: ${given}`);
+      return;
+    }
     const drivable = await engineOrReport(ctx);
     if (!drivable) return;
-    const result = await applyFlow(drivable.engine, drivable.io, ctx.store, { force: ctx.flag("force"), noRollback: ctx.flag("no-rollback") });
+    const failsafe = given ?? ipv4Of(ctx.session.sshClient);
+    const result = await applyFlow(drivable.engine, drivable.io, ctx.store, {
+      failsafe,
+      describeFailure: errors.describeFailure,
+      force: ctx.flag("force"),
+      noRollback: ctx.flag("no-rollback"),
+    });
     if (!result.ok) {
       ctx.out.error(result.error);
       return;
@@ -81,7 +97,7 @@ const apply: CommandDef = {
     ctx.out.success(`aplicado (${drivable.engine.id}): ${result.rules} regras${result.failsafe ? `, failsafe ${result.failsafe}` : ", sem failsafe"}`);
     if (result.scheduled) ctx.out.warning(`reversão automática em ${ROLLBACK_SECONDS}s (${result.scheduled}); ainda tem acesso? rode: ${FIX.confirm}`);
   },
-};
+});
 
 // ---- confirm ----
 
@@ -107,7 +123,7 @@ const confirm: CommandDef = {
 
 // ---- revert ----
 
-const revert: CommandDef = {
+const revert = (errors: ErrorsKit): CommandDef => ({
   help: "Volta às regras de antes do último apply",
   destructive: true,
   async run(ctx) {
@@ -118,11 +134,11 @@ const revert: CommandDef = {
       ctx.out.error("não há snapshot guardado");
       return;
     }
-    if (!(await runOrReport(ctx, () => drivable.engine.restore(drivable.io, script)))) return;
+    if (!(await runOrReport(ctx, errors, () => drivable.engine.restore(drivable.io, script)))) return;
     await cancel(ctx.shell, ctx.fs);
     clearApplyState(ctx.store);
     ctx.out.success("regras anteriores restauradas");
   },
-};
+});
 
-export const applyCommands: Record<string, CommandDef> = { status, check, apply, confirm, revert };
+export const applyCommands = (errors: ErrorsKit): Record<string, CommandDef> => ({ status, check, apply: apply(errors), confirm, revert: revert(errors) });

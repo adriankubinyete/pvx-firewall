@@ -117,15 +117,8 @@ export const expandPort = (text: string): PortMatch[] => {
 
 // ---- the SSH session ----
 
-/** The `(ip)` that `who -m` prints after the terminal and the login time. */
-const WHO_CLIENT = /\((\d{1,3}(?:\.\d{1,3}){3})\)/;
-
-/** First IPv4 of `SSH_CLIENT` / `SSH_CONNECTION`, else the `(ip)` of `who -m`. */
-export const sessionIp = (env: Record<string, string | undefined>, whoOutput = ""): string | undefined => {
-  for (const variable of [env.SSH_CLIENT, env.SSH_CONNECTION]) {
-    const firstWord = variable?.trim().split(/\s+/)[0];
-    if (firstWord && ipToInt(firstWord) !== undefined) return firstWord;
-  }
-  const fromWho = WHO_CLIENT.exec(whoOutput)?.[1];
-  return fromWho !== undefined && ipToInt(fromWho) !== undefined ? fromWho : undefined;
+/** The address when it is a plain IPv4, else undefined: the failsafe rules are IPv4 only, so an IPv6 client counts as unknown. */
+export const ipv4Of = (address: string | undefined): string | undefined => {
+  if (address === undefined) return undefined;
+  return ipToInt(address) === undefined ? undefined : address;
 };

@@ -1,7 +1,6 @@
 // `ip` and `port` commands: list, accept, deny, remove, and the Phonevox base IPs.
 import type { CommandCtx, CommandDef } from "@pvx/sdk";
-import { detectSession } from "../apply.ts";
-import { coveredBy } from "../net.ts";
+import { coveredBy, ipv4Of } from "../net.ts";
 import { OPPOSITE_LIST, STORE_KEY, actor, addEntry, isIp, load, missingBase, norm, removeEntry, type AddResult, type FwState, type ListName } from "../state.ts";
 import { NEEDS_APPLY } from "../texts.ts";
 
@@ -38,9 +37,9 @@ function addCommand(list: ListName, help: string): CommandDef {
       { name: "value", help: isIp(list) ? IP_VALUE_HELP : PORT_VALUE_HELP, kind: "positional", required: true },
       { name: "comment", help: "Comentário", kind: "option" },
     ],
-    async run(ctx) {
+    run(ctx) {
       const state = load(ctx.store);
-      const session = list === "ipDeny" ? await detectSession(ctx.exec) : undefined;
+      const session = list === "ipDeny" ? ipv4Of(ctx.session.sshClient) : undefined;
       let changed = false;
       for (const rawValue of ctx.list("value")) {
         if (addValue(ctx, state, list, rawValue, session)) changed = true;

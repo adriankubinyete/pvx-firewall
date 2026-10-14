@@ -4,7 +4,7 @@ import { iptables, script as ipScript } from "../src/engines/iptables.ts";
 import { nftables, script as nftScript } from "../src/engines/nft.ts";
 import { ENGINES, pickEngine } from "../src/engines/index.ts";
 import { renderRules, type RuleFormat } from "../src/engines/rules.ts";
-import { fakeExec, fakeFs, io, line, sample } from "./fake.ts";
+import { fakeExec, fakeFs, fakeReadCtx, fakeSystem, io, line, sample } from "./fake.ts";
 
 test("nftables: golden transaction", () => {
   expect(nftScript(sample)).toBe(`add table ip pvx
@@ -167,8 +167,8 @@ test("firewalld status: unavailable when the service is not active", async () =>
 
 test("auto picks firewalld when active, else nftables when nft exists, else iptables, else an error", async () => {
   const pick = async (have: string[], fw = false) => {
-    const { exec } = fakeExec((c) => (c.cmd === "systemctl" ? { stdout: fw ? "active" : "inactive" } : have.includes(c.cmd) ? undefined : { code: 127 }));
-    const r = await pickEngine(exec, "auto");
+    const host = fakeSystem({ rules: [(c) => (c.cmd === "systemctl" ? { stdout: fw ? "active" : "inactive" } : have.includes(c.cmd) ? undefined : { code: 127 })] });
+    const r = await pickEngine(fakeReadCtx(host), "auto");
     return "engine" in r ? r.engine.id : "error";
   };
   expect(await pick(["nft", "iptables"], true)).toBe("firewalld"); // firewalld owns nft: never write nft beside it
@@ -178,8 +178,8 @@ test("auto picks firewalld when active, else nftables when nft exists, else ipta
 });
 
 test("an explicit engine setting wins over detection", async () => {
-  const { exec } = fakeExec((c) => (c.cmd === "systemctl" ? { stdout: "active" } : undefined));
-  const r = await pickEngine(exec, "iptables");
+  const host = fakeSystem({ rules: [(c) => (c.cmd === "systemctl" ? { stdout: "active" } : undefined)] });
+  const r = await pickEngine(fakeReadCtx(host), "iptables");
   expect("engine" in r && r.engine.id).toBe("iptables");
 });
 

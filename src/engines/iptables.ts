@@ -1,6 +1,6 @@
 // iptables: one chain of our own (PVX_INPUT) jumped to from INPUT, refilled in a single iptables-restore --noflush.
 // The rest of INPUT (fail2ban, docker...) is left alone.
-import { ok, run } from "../exec.ts";
+import { ok } from "../exec.ts";
 import { makeBoot } from "../boot.ts";
 import { available, canonicalAddress, restoreFromScript, unavailable } from "./common.ts";
 import { renderRules, type RuleFormat } from "./rules.ts";
@@ -43,9 +43,9 @@ export const iptables: Engine = {
   failsafeRule: FORMAT.failsafe,
   restore: restoreFromScript,
   async status(io: ProbeIo): Promise<EngineStatus> {
-    const version = await run(io.exec, "iptables", ["--version"]);
+    const version = await io.shell.run("iptables", ["--version"]);
     if (!ok(version)) return unavailable("iptables não encontrado");
-    const saved = await run(io.exec, "iptables-save", ["-t", "filter"]);
+    const saved = await io.shell.run("iptables-save", ["-t", "filter"]);
     if (!ok(saved)) return unavailable("iptables-save falhou");
     const ourRules = parseListing(saved.stdout);
     const jumpsToOurChain = saved.stdout.includes(`-A INPUT -j ${CHAIN}`);

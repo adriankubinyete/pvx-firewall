@@ -14,7 +14,7 @@ import { page } from "./page/index.tsx";
 const PAGE_TAB_ORDER = 30;
 
 export const factory: ModuleFactory = (sdk) => ({
-  commands: { ...applyCommands, ...engineCommands, ...listCommands, ...asteriskCommands, ...bootCommands },
+  commands: { ...applyCommands(sdk.errors), ...engineCommands, ...listCommands, ...asteriskCommands, ...bootCommands(sdk.errors) },
   capabilities: capabilities(sdk.proof),
   queries,
   widgets,

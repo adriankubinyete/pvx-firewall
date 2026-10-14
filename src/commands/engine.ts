@@ -7,7 +7,7 @@ const invalidEngineMessage = (name: string) => `engine inválido: ${name} (use $
 
 /** `engine: auto -> nftables`, or `engine: auto (why none can be picked)`. */
 async function reportChosenEngine(ctx: CommandCtx, setting: EngineSetting): Promise<void> {
-  const picked = await pickEngine(ctx.exec, setting);
+  const picked = await pickEngine(ctx, setting);
   const outcome = "engine" in picked ? ` -> ${picked.engine.id}` : ` (${picked.error})`;
   ctx.out.success(`engine: ${setting}${outcome}`);
 }

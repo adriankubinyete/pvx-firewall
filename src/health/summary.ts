@@ -2,16 +2,16 @@
 // live state of the engine (`readLiveStatus`) and what an apply would change (`readDiff`).
 // The capabilities, the queries, the widgets, the commands `status` and `check` and the page all read through here.
 import type { ReadCtx } from "@pvx/sdk";
-import { detectSession } from "../apply.ts";
 import { engineSettingOf, resolveEngine, type EngineSetting } from "../engines/index.ts";
 import { diffRules } from "../engines/rules.ts";
 import type { BootStatus, EngineId } from "../engines/types.ts";
 import { UNIT_NAME } from "../boot.ts";
+import { ipv4Of } from "../net.ts";
 import { pendingInfo, type Pending } from "../rollback.ts";
 import { STORE_KEY, desiredOf, listsFingerprint, load, missingBase, type FwState, type LastApply } from "../state.ts";
 
-/** What a read needs: probes through `exec`, files through `fs`, the record through `store`. A command context has all of it too. */
-export type ReadDeps = Pick<ReadCtx, "exec" | "fs" | "store">;
+/** What a read needs: probes through `shell`, the engine choice through `strategy`, files through `fs`, the record through `store`, the SSH client through `session`. A command context has all of it too. */
+export type ReadDeps = Pick<ReadCtx, "shell" | "strategy" | "fs" | "store" | "session">;
 
 /** The user-facing reason the engine cannot be driven. */
 export interface EngineProblem {
@@ -65,7 +65,7 @@ export interface LiveStatus {
 
 /** The live state of the engine against the lists (`firewall status`, and the page's status panel). */
 export async function readLiveStatus(deps: ReadDeps): Promise<LiveStatus | EngineProblem> {
-  const resolved = await resolveEngine(deps.exec, deps.store);
+  const resolved = await resolveEngine(deps);
   if (isEngineProblem(resolved)) return resolved;
   const { engine, auto, status } = resolved;
   const lastApply = deps.store.get<LastApply>(STORE_KEY.lastApply);
@@ -77,7 +77,7 @@ export async function readLiveStatus(deps: ReadDeps): Promise<LiveStatus | Engin
     loadedRules: status.rules.length,
     wantedRules: wanted.length,
     boot: await engine.bootStatus(deps),
-    session: await detectSession(deps.exec),
+    session: ipv4Of(deps.session.sshClient),
     pending: await pendingInfo(deps.fs, deps.store),
     lastApply,
   };
@@ -88,18 +88,18 @@ export interface DiffView {
   added: string[];
   /** Rules loaded now that an apply would drop. */
   removed: string[];
-  /** The SSH client IP; without it an apply needs `--force`. */
+  /** The failsafe IP: the one given, else the SSH client. Without it an apply needs `--failsafe-ip` or `--force`. */
   session?: string;
   /** Base IPs the lists do not cover. */
   missingBaseIps: string[];
 }
 
-/** What an apply would change: the loaded rules against the ones the lists (and the session failsafe) ask for. */
-export async function readDiff(deps: Pick<ReadDeps, "exec" | "store">): Promise<DiffView | EngineProblem> {
-  const resolved = await resolveEngine(deps.exec, deps.store);
+/** What an apply would change: the loaded rules against the ones the lists (and the failsafe) ask for. `informedIp`: the IP the technician gave for the failsafe. */
+export async function readDiff(deps: Pick<ReadDeps, "shell" | "strategy" | "store" | "session">, informedIp?: string): Promise<DiffView | EngineProblem> {
+  const resolved = await resolveEngine(deps);
   if (isEngineProblem(resolved)) return resolved;
   const lists = load(deps.store);
-  const session = await detectSession(deps.exec);
+  const session = informedIp ?? ipv4Of(deps.session.sshClient);
   const { added, removed } = diffRules(resolved.status.rules, resolved.engine.render(desiredOf(lists, session)));
   return { added, removed, session, missingBaseIps: missingBase(lists).map(([value]) => value) };
 }

@@ -1,23 +1,18 @@
 // The apply flow: snapshot, failsafe, scheduled revert, load, verify. Everything goes through the injected `exec` and `fs`.
-// The safety order is the contract: detect the session, snapshot (only if nothing is pending), schedule the revert,
+// The safety order is the contract: know the failsafe IP, snapshot (only if nothing is pending), schedule the revert,
 // load, verify the failsafe rule is really loaded, and only then record.
 import type { Store } from "@pvx/sdk";
-import type { Engine, ExecFn, Io } from "./engines/types.ts";
-import { describeFailure, run } from "./exec.ts";
-import { sessionIp } from "./net.ts";
+import type { Engine, Io } from "./engines/types.ts";
 import { cancel, paths, pendingInfo, schedule, type ScheduledBy } from "./rollback.ts";
 import { STORE_KEY, actor, clearPending, desiredOf, listsFingerprint, load, type FwState, type LastApply } from "./state.ts";
 
 type Env = Record<string, string | undefined>;
 
-/** The SSH client: `SSH_CLIENT`, else `who -m`. Undefined when neither says (console, serial). */
-export async function detectSession(exec: ExecFn, env: Env = process.env): Promise<string | undefined> {
-  const fromEnv = sessionIp(env);
-  if (fromEnv) return fromEnv;
-  return sessionIp({}, (await run(exec, "who", ["-m"])).stdout);
-}
-
 export interface ApplyOptions {
+  /** The IP the failsafe rule keeps open: the one the technician gave, else the SSH client of the session. Without one, an apply needs `force`. */
+  failsafe?: string;
+  /** `sdk.errors.describeFailure`: how a failed step is told to the technician. */
+  describeFailure: (error: unknown) => string;
   force?: boolean;
   noRollback?: boolean;
   env?: Env;
@@ -26,17 +21,17 @@ export interface ApplyOptions {
 export type ApplyResult = { ok: true; failsafe?: string; rules: number; scheduled?: ScheduledBy } | { ok: false; error: string };
 
 const NO_SESSION_MESSAGE =
-  "não achei o IP da sessão SSH (SSH_CLIENT, who -m): sem o failsafe a aplicação pode derrubar o acesso. Use --force para aplicar assim mesmo";
+  "não achei o IP da sua sessão SSH: sem o failsafe a aplicação pode derrubar o acesso. Use --failsafe-ip <ip> para informar o seu IP, ou --force para aplicar assim mesmo";
 
-export async function applyFlow(engine: Engine, io: Io, store: Store, options: ApplyOptions = {}): Promise<ApplyResult> {
+export async function applyFlow(engine: Engine, io: Io, store: Store, options: ApplyOptions): Promise<ApplyResult> {
   const now = options.now ?? Date.now();
-  const failsafe = await detectSession(io.exec, options.env);
+  const { failsafe, describeFailure } = options;
   if (!failsafe && !options.force) return { ok: false, error: NO_SESSION_MESSAGE };
 
   const lists = load(store);
   await snapshotUnlessPending(engine, io, store, now);
   const scheduled = options.noRollback ? undefined : await schedule(io.shell, io.fs, store, now);
-  const undo = (why: string) => undoApply(engine, io, store, scheduled !== undefined, why);
+  const undo = (why: string) => undoApply(engine, io, store, scheduled !== undefined, why, describeFailure);
 
   try {
     await engine.apply(io, desiredOf(lists, failsafe));
@@ -63,7 +58,7 @@ async function snapshotUnlessPending(engine: Engine, io: Io, store: Store, now: 
  * A load that failed or did not keep the failsafe: put the snapshot back, disarm the revert, forget the deadline.
  * `lastApply` stays as it was: this apply never recorded one.
  */
-async function undoApply(engine: Engine, io: Io, store: Store, wasScheduled: boolean, why: string): Promise<ApplyResult> {
+async function undoApply(engine: Engine, io: Io, store: Store, wasScheduled: boolean, why: string, describeFailure: ApplyOptions["describeFailure"]): Promise<ApplyResult> {
   let restoreFailure = "";
   try {
     await engine.restore(io, paths().script);

@@ -1,7 +1,6 @@
 // Fake system programs for the story and page tests. PATH is replaced by a directory holding ONLY these scripts, so the real
 // firewall-cmd, nft, iptables or systemctl of the machine running the tests can never be reached.
 // Every script logs its call to `$PVX_STUB_DIR/calls` first (`calls()` reads it), then answers like the program would.
-import { afterEach, beforeEach } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +10,7 @@ const LOG_THE_CALL = `echo "\${0##*/} $*" >> "$PVX_STUB_DIR/calls"`;
 /** A script that logs the call, runs `body`, and exits 0 unless the body exits first. */
 const program = (body: string) => `#!/bin/sh\n${LOG_THE_CALL}\n${body}\nexit 0\n`;
 
-/** The programs that answer something. Any other name in `installStubs` is a no-op that exits 0 (`who`, `systemd-run`). */
+/** The programs that answer something. Any other name in `installStubs` is a no-op that exits 0 (`systemd-run`). */
 const STUB_BODIES: Record<string, string> = {
   // nft: a table that remembers what was loaded into it (`loaded`).
   nft: `case "$1" in
@@ -78,17 +77,5 @@ export function installStubs(programs: string[]): Stubs {
   };
 }
 
-/** The SSH client the story and page tests pretend to connect from. */
+/** The SSH client the story and page tests pretend to connect from (`ctx.session.sshClient`). */
 export const SSH_CLIENT_IP = "203.0.113.7";
-
-/** Every test of the file runs inside an SSH session from `clientIp`; `SSH_CLIENT` is put back afterwards. */
-export function withSshSession(clientIp = SSH_CLIENT_IP): void {
-  const original = process.env.SSH_CLIENT;
-  beforeEach(() => {
-    process.env.SSH_CLIENT = `${clientIp} 5555 22`;
-  });
-  afterEach(() => {
-    if (original === undefined) delete process.env.SSH_CLIENT;
-    else process.env.SSH_CLIENT = original;
-  });
-}

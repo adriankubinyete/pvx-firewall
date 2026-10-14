@@ -45,6 +45,11 @@ test("the manifest declares every command the module registers", async () => {
   expect(def.capabilities!.map((c) => c.id).sort()).toEqual([...manifest.contributes.capabilities].sort());
 });
 
+test("the manifest allowlist is exact: `who` is gone, the session comes from ctx.session", async () => {
+  const manifest = JSON.parse(await Bun.file(`${import.meta.dir}/../pvx-module.json`).text());
+  expect(manifest.permissions.exec).toEqual(["firewall-cmd", "nft", "iptables", "iptables-save", "iptables-restore", "systemctl", "systemd-run", "asterisk", "sh"]);
+});
+
 test("boot enable writes the unit, reloads, enables", async () => {
   const fs = fakeFs();
   const { exec, calls } = fakeExec();
