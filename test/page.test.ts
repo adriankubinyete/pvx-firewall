@@ -284,6 +284,12 @@ test("A: reviews the diff, the host confirms, then the countdown; enter confirms
   await untilShows(p, "apply confirmado");
   expect(stubs.calls()).toContain("systemctl stop pvx-firewall-revert.timer");
   expect((await untilShows(p, "status: ATIVO"))).toContain("status: ATIVO");
+  await until(p, (frame) => !frame.includes("precisa aplicar")); // applied and equal: the notice goes
+});
+
+test("lists that differ from what is applied show the page notice next to aplicar (UI.md §13)", async () => {
+  const p = await open();
+  expect(p.frame()).toContain("precisa aplicar: o firewall ainda não foi aplicado");
 });
 
 test("A then n cancels without touching the firewall", async () => {

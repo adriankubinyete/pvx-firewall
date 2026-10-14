@@ -2,7 +2,7 @@
 import type { CommandRun, OutLine, Tone } from "@pvx/sdk";
 import { errorMessage } from "../exec.ts";
 
-export interface Notice {
+export interface Headline {
   text: string;
   tone: Tone;
 }
@@ -18,7 +18,7 @@ function lineWorthSaying(run: CommandRun): OutLine | undefined {
   return verdict ?? run.lines[0];
 }
 
-export function headlineOf(run: CommandRun): Notice {
+export function headlineOf(run: CommandRun): Headline {
   const line = lineWorthSaying(run);
   const text = line?.text ?? (run.exit === 0 ? "ok" : `saiu ${run.exit}`);
   if (run.exit !== 0) return { text, tone: "error" };

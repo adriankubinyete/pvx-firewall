@@ -10,7 +10,7 @@ import { makeCountdown } from "./Countdown.tsx";
 import { makeEntryForm, type FormTarget } from "./EntryForm.tsx";
 import { INITIAL_FOCUS, INITIAL_SELECTION, makeMainScreen, type Focus, type Selection } from "./MainScreen.tsx";
 import { makeResultScreen } from "./ResultScreen.tsx";
-import { attempt, failedRun, headlineOf, type Notice } from "./outcome.ts";
+import { attempt, failedRun, headlineOf } from "./outcome.ts";
 import { makeCommands } from "./commands.ts";
 import { kindOfList } from "./rows.ts";
 
@@ -23,10 +23,10 @@ type Screen =
   | { name: "result"; run: CommandRun };
 
 const MAIN: Screen = { name: "main" };
-const REVERT_FINISHED_NOTICE: Notice = { text: "reversão automática concluída", tone: "info" };
+const REVERT_FINISHED_TEXT = "reversão automática concluída";
 
 export function makeFirewall(ui: SdkUi) {
-  const { h, Loading, useState, useMemo, useStore } = ui;
+  const { h, Loading, useState, useMemo, useStore, useNudge } = ui;
   const useFirewallCommands = makeCommands(ui);
   const MainScreen = makeMainScreen(ui);
   const EntryForm = makeEntryForm(ui);
@@ -36,21 +36,27 @@ export function makeFirewall(ui: SdkUi) {
 
   return function Firewall() {
     const store = useStore();
+    const nudge = useNudge();
     const commands = useFirewallCommands();
     const [screen, setScreen] = useState<Screen>(MAIN);
     const [revision, setRevision] = useState(0);
-    const [notice, setNotice] = useState<Notice | undefined>(undefined);
     const [focus, setFocus] = useState<Focus>(INITIAL_FOCUS);
     const [selection, setSelection] = useState<Selection>(INITIAL_SELECTION);
     const lists = useMemo(() => load(store), [revision]);
 
     const backToMain = () => setScreen(MAIN);
 
-    /** A success goes back to the tab with a notice; a failure opens the result screen and stays there. */
+    const announce = (run: CommandRun) => {
+      const headline = headlineOf(run);
+      if (headline.tone === "ok") nudge(headline.text, "ok");
+      else nudge(headline.text);
+    };
+
+    /** A success goes back to the tab and says so in the footer (UI.md §13); a failure opens the result screen and stays there. */
     const settle = (run: CommandRun) => {
       setRevision(revision + 1);
       if (run.exit === 0) {
-        setNotice(headlineOf(run));
+        announce(run);
         setScreen(MAIN);
       } else {
         setScreen({ name: "result", run });
@@ -74,7 +80,7 @@ export function makeFirewall(ui: SdkUi) {
     };
     const closeCountdown = () => {
       setRevision(revision + 1);
-      setNotice(REVERT_FINISHED_NOTICE);
+      nudge(REVERT_FINISHED_TEXT);
       setScreen(MAIN);
     };
 
@@ -106,7 +112,6 @@ export function makeFirewall(ui: SdkUi) {
             selection={selection}
             onSelectionChange={setSelection}
             revision={revision}
-            notice={notice}
             onAdd={(kind) => setScreen({ name: "form", target: { mode: "add", kind } })}
             onEdit={(row) => setScreen({ name: "form", target: { mode: "edit", row } })}
             onTrust={() => void perform("confiando nos IPs da Phonevox…", commands.trustPhonevox)}

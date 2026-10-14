@@ -3,7 +3,7 @@
 /** @jsxFrag Fragment */
 // Panels [2] IPs and [3] portas: a table of entries and, under it, the action rows. The selection shows only while the list has the focus.
 import type { Component, SdkUi } from "@pvx/sdk";
-import { LIST_COLUMNS, actionItem, entryItem, positionText, rowsAround, type PanelRows } from "./rows.ts";
+import { LIST_COLUMNS, actionItem, entryItem, positionText, type PanelRows } from "./rows.ts";
 
 export interface EntryPanelProps {
   title: string;
@@ -13,7 +13,7 @@ export interface EntryPanelProps {
   /** Only the list with the focus draws its selection. */
   listActive: boolean;
   panelFocused: boolean;
-  /** Entries shown; 0 collapses the panel to its title. */
+  /** Entry rows the list draws (`List maxRows`); 0 collapses the panel to its title. */
   capacity: number;
   grow: boolean;
   panelRef: unknown;
@@ -28,13 +28,11 @@ export const makeEntryPanel = ({ h, Panel, List, Text, useTheme }: SdkUi): Compo
     const { rows, selectedId, listActive, capacity } = props;
     const selected = listActive ? selectedId : undefined;
     const title = `${props.title} ${positionText(rows, selectedId)}${props.panelFocused ? ` ${g.active}` : ""}`;
-    const onActionRow = rows.actions.some((row) => row.id === selectedId);
-    const anchorId = onActionRow ? rows.entries.at(-1)?.id : selectedId;
-    const shown = rowsAround(rows.entries, anchorId, capacity);
+    const hasEntries = rows.entries.length > 0;
     return (
-      <Panel title={title} tone={props.panelFocused ? "accent" : undefined} grow={props.grow} panelRef={props.panelRef} onPress={props.onPanelPress}>
-        {capacity > 0 && shown.length ? <List items={shown.map(entryItem)} columns={LIST_COLUMNS} selected={selected} onPress={props.onRowPress} onHover={props.onRowHover} /> : null}
-        {capacity > 0 && !shown.length ? <Text tone="dim">—</Text> : null}
+      <Panel title={title} tone={props.panelFocused ? "accent" : undefined} grow={props.grow} shrink panelRef={props.panelRef} onPress={props.onPanelPress}>
+        {capacity > 0 && hasEntries ? <List items={rows.entries.map(entryItem)} columns={LIST_COLUMNS} selected={selected} maxRows={capacity} onPress={props.onRowPress} onHover={props.onRowHover} /> : null}
+        {capacity > 0 && !hasEntries ? <Text tone="dim">—</Text> : null}
         {capacity > 0 ? <List items={rows.actions.map(actionItem)} selected={selected} onPress={props.onRowPress} onHover={props.onRowHover} /> : null}
       </Panel>
     );

@@ -80,14 +80,7 @@ export function entryItem({ id, list, entry }: EntryRow): ListItem {
 
 export const actionItem = ({ id, label }: ActionRow): ListItem => ({ id, label, tone: "accent" });
 
-// ---- windowing ----
-
-/** The `capacity` rows around the anchor row (a page does not scroll). The anchor is the selected row, or the last row when it is an action. */
-export function rowsAround<Row extends { id: string }>(rows: Row[], anchorId: string | undefined, capacity: number): Row[] {
-  const anchorIndex = Math.max(0, rows.findIndex((row) => row.id === anchorId));
-  const start = Math.max(0, Math.min(anchorIndex - Math.floor(capacity / 2), rows.length - capacity));
-  return rows.slice(start, start + capacity);
-}
+// ---- position ----
 
 /** `3/13` for the selected entry, or just `13` when the selection is not on an entry. */
 export function positionText(rows: PanelRows, selectedId: string | undefined): string {

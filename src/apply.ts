@@ -3,7 +3,7 @@
 // load, verify the failsafe rule is really loaded, and only then record.
 import type { Store } from "@pvx/sdk";
 import type { Engine, ExecFn, Io } from "./engines/types.ts";
-import { errorMessage, run } from "./exec.ts";
+import { describeFailure, run } from "./exec.ts";
 import { sessionIp } from "./net.ts";
 import { cancel, paths, pendingInfo, schedule, type ScheduledBy } from "./rollback.ts";
 import { STORE_KEY, actor, clearPending, desiredOf, listsFingerprint, load, type FwState, type LastApply } from "./state.ts";
@@ -35,13 +35,13 @@ export async function applyFlow(engine: Engine, io: Io, store: Store, options: A
 
   const lists = load(store);
   await snapshotUnlessPending(engine, io, store, now);
-  const scheduled = options.noRollback ? undefined : await schedule(io.exec, io.fs, store, now);
+  const scheduled = options.noRollback ? undefined : await schedule(io.shell, io.fs, store, now);
   const undo = (why: string) => undoApply(engine, io, store, scheduled !== undefined, why);
 
   try {
     await engine.apply(io, desiredOf(lists, failsafe));
   } catch (error) {
-    return undo(errorMessage(error));
+    return undo(describeFailure(error));
   }
 
   const loaded = await engine.status(io);
@@ -68,9 +68,9 @@ async function undoApply(engine: Engine, io: Io, store: Store, wasScheduled: boo
   try {
     await engine.restore(io, paths().script);
   } catch (error) {
-    restoreFailure = `; a restauração também falhou: ${errorMessage(error)}`;
+    restoreFailure = `; a restauração também falhou: ${describeFailure(error)}`;
   }
-  if (wasScheduled) await cancel(io.exec, io.fs);
+  if (wasScheduled) await cancel(io.shell, io.fs);
   clearPending(store);
   return { ok: false, error: `${why}; regras anteriores restauradas${restoreFailure}` };
 }

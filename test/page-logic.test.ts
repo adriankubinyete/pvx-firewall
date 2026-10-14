@@ -2,9 +2,9 @@
 import { expect, test } from "bun:test";
 import type { CommandRun, OutLine } from "@pvx/sdk";
 import { newEntryOf, validateNewEntry } from "../src/page/EntryForm.tsx";
-import { listLayout, reviewCapacity, type ListPanelId } from "../src/page/layout.ts";
+import { listLayout, reviewMaxRows, type ListPanelId } from "../src/page/layout.ts";
 import { headlineOf } from "../src/page/outcome.ts";
-import { panelRows, positionText, rowsAround } from "../src/page/rows.ts";
+import { panelRows, positionText } from "../src/page/rows.ts";
 import { seed } from "../src/state.ts";
 
 const ACTION_ROWS = { ips: 2, ports: 1 };
@@ -36,15 +36,7 @@ test("side by side from 120 columns; stacked below, the focused list gets the he
 });
 
 test("the review shows at least a few rules, even in a short terminal", () => {
-  expect(reviewCapacity({ cols: 80, rows: 24 }, 2)).toBeGreaterThanOrEqual(3);
-});
-
-test("rowsAround keeps the anchor in view and never goes past the ends", () => {
-  const rows = Array.from({ length: 20 }, (_, index) => ({ id: `r${index}` }));
-  expect(rowsAround(rows, "r0", 5).map((row) => row.id)).toEqual(["r0", "r1", "r2", "r3", "r4"]);
-  expect(rowsAround(rows, "r10", 5).map((row) => row.id)).toEqual(["r8", "r9", "r10", "r11", "r12"]);
-  expect(rowsAround(rows, "r19", 5).map((row) => row.id)).toEqual(["r15", "r16", "r17", "r18", "r19"]);
-  expect(rowsAround(rows.slice(0, 3), "r1", 5)).toHaveLength(3);
+  expect(reviewMaxRows({ cols: 80, rows: 24 }, 2)).toBeGreaterThanOrEqual(3);
 });
 
 test("the IP panel has the two action rows, the port panel one; entries are by list and value", () => {

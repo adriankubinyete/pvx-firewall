@@ -2,9 +2,10 @@
 import type { CommandCtx } from "@pvx/sdk";
 import { resolveEngine, zoneOf, type ResolvedEngine } from "../engines/index.ts";
 import type { Io } from "../engines/types.ts";
+import { describeFailure } from "../exec.ts";
 import { isEngineProblem } from "../health/summary.ts";
 
-export const ioOf = (ctx: CommandCtx): Io => ({ exec: ctx.exec, fs: ctx.fs, zone: zoneOf(ctx.store) });
+export const ioOf = (ctx: CommandCtx): Io => ({ exec: ctx.exec, shell: ctx.shell, fs: ctx.fs, zone: zoneOf(ctx.store) });
 
 export interface DrivableEngine extends ResolvedEngine {
   io: Io;
@@ -18,4 +19,15 @@ export async function engineOrReport(ctx: CommandCtx): Promise<DrivableEngine | 
     return undefined;
   }
   return { ...resolved, io: ioOf(ctx) };
+}
+
+/** Runs a step that may throw. A failure is printed with its cause (the host's own catch shows only the message) and the command then just returns. */
+export async function runOrReport(ctx: CommandCtx, step: () => Promise<void>): Promise<boolean> {
+  try {
+    await step();
+    return true;
+  } catch (error) {
+    ctx.out.error(describeFailure(error));
+    return false;
+  }
 }

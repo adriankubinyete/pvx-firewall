@@ -1,5 +1,7 @@
-import type { ExecResult } from "@pvx/sdk";
+import type { ExecResult, StepError } from "@pvx/sdk";
 import type { ExecFn } from "./engines/types.ts";
+
+// Commands use `ctx.shell`. The probes (a query, a proof, a widget) get a ReadCtx, which has no `shell`, so they keep this small `run` over `exec`.
 
 /** The exit code `run` reports for a program that is not installed (the shell convention for "command not found"). */
 export const EXEC_NOT_FOUND = 127;
@@ -8,6 +10,16 @@ export const EXEC_NOT_FOUND = 127;
 const PERMISSION_ERROR = /permiss/i;
 
 export const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** A `ctx.shell.must` failure: its `output` has the lines that name the cause. */
+const isStepError = (error: unknown): error is StepError => error instanceof Error && error.name === "StepError";
+
+/** What went wrong, for the technician: a failed step adds the lines of output that explain it. */
+export function describeFailure(error: unknown): string {
+  const message = errorMessage(error);
+  if (!isStepError(error) || !error.output.length) return message;
+  return `${message}: ${error.output.join("; ")}`;
+}
 
 /** A missing program is exit 127, not a throw; a permission violation of the host still throws. */
 export const run = async (exec: ExecFn, cmd: string, args: string[] = [], opts?: Parameters<ExecFn>[2]): Promise<ExecResult> => {
@@ -22,17 +34,6 @@ export const run = async (exec: ExecFn, cmd: string, args: string[] = [], opts?:
 
 export const ok = (result: ExecResult) => result.code === 0;
 export const notFound = (result: ExecResult) => result.code === EXEC_NOT_FOUND;
-
-/** The error a failed step throws: what was run, its exit code and the first useful output. */
-export const fail = (what: string, result: ExecResult) =>
-  new Error(`${what} falhou (exit ${result.code}): ${(result.stderr || result.stdout).trim() || "sem mensagem"}`);
-
-/** Runs a step that must succeed: throws `fail(what, ...)` otherwise. */
-export async function runOrFail(exec: ExecFn, cmd: string, args: string[], what: string, opts?: Parameters<ExecFn>[2]): Promise<ExecResult> {
-  const result = await run(exec, cmd, args, opts);
-  if (!ok(result)) throw fail(what, result);
-  return result;
-}
 
 /** Single-quotes a string for `sh`. */
 export const shellQuote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;

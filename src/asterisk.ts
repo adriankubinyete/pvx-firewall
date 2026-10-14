@@ -1,7 +1,7 @@
 // Peers of the local Asterisk that are worth trusting. Never applied without a review (spec risk 6).
+import type { Shell } from "@pvx/sdk";
 import { coveredBy, ipToInt } from "./net.ts";
-import { notFound, ok, run } from "./exec.ts";
-import type { ExecFn } from "./engines/types.ts";
+import { notFound, ok } from "./exec.ts";
 
 /** The `asterisk -rx` queries that list peers, for chan_sip and for PJSIP. */
 export const PEER_QUERIES = ["sip show peers", "pjsip show contacts", "pjsip show endpoints"];
@@ -74,11 +74,11 @@ function whySkipped(ip: string, ownIps: string[], trusted: string[]): string {
   return "";
 }
 
-export async function collect(exec: ExecFn): Promise<{ peers: Peer[]; asterisk: boolean }> {
+export async function collect(shell: Shell): Promise<{ peers: Peer[]; asterisk: boolean }> {
   const peers: Peer[] = [];
   let asterisk = false;
   for (const query of PEER_QUERIES) {
-    const result = await run(exec, "asterisk", ["-rx", query], { timeoutMs: ASTERISK_TIMEOUT_MS });
+    const result = await shell.run("asterisk", ["-rx", query], { timeoutMs: ASTERISK_TIMEOUT_MS });
     if (notFound(result)) break; // not installed: one miss is enough
     asterisk = true;
     if (ok(result)) peers.push(...parsePeers(result.stdout));

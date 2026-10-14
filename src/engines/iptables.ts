@@ -1,6 +1,6 @@
 // iptables: one chain of our own (PVX_INPUT) jumped to from INPUT, refilled in a single iptables-restore --noflush.
 // The rest of INPUT (fail2ban, docker...) is left alone.
-import { ok, run, runOrFail } from "../exec.ts";
+import { ok, run } from "../exec.ts";
 import { makeBoot } from "../boot.ts";
 import { available, canonicalAddress, restoreFromScript, unavailable } from "./common.ts";
 import { renderRules, type RuleFormat } from "./rules.ts";
@@ -52,13 +52,13 @@ export const iptables: Engine = {
     return available(ourRules, ourRules.length > 0 && jumpsToOurChain);
   },
   async apply(io, desired) {
-    await run(io.exec, "iptables", ["-N", CHAIN]); // exists already: fine
-    const jump = await run(io.exec, "iptables", ["-C", "INPUT", "-j", CHAIN]);
-    if (!ok(jump)) await runOrFail(io.exec, "iptables", ["-I", "INPUT", "1", "-j", CHAIN], "iptables -I INPUT");
-    await runOrFail(io.exec, "iptables-restore", ["--noflush"], "iptables-restore", { stdin: script(desired) });
+    await io.shell.run("iptables", ["-N", CHAIN]); // exists already: fine
+    const alreadyJumps = await io.shell.ok("iptables", ["-C", "INPUT", "-j", CHAIN]);
+    if (!alreadyJumps) await io.shell.must("iptables", ["-I", "INPUT", "1", "-j", CHAIN]);
+    await io.shell.must("iptables-restore", ["--noflush"], { stdin: script(desired) });
   },
   async snapshot(io) {
-    const saved = await runOrFail(io.exec, "iptables-save", ["-t", "filter"], "iptables-save");
+    const saved = await io.shell.must("iptables-save", ["-t", "filter"]);
     return `#!/bin/sh\niptables-restore <<'PVX_EOF'\n${saved.stdout.trim()}\nPVX_EOF\n`;
   },
 };

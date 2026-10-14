@@ -1,6 +1,6 @@
 // nftables: one table of our own (`ip pvx`), IPv4 only, replaced in a single transaction.
 // Other tables (docker, fail2ban...) are never touched.
-import { ok, run, runOrFail } from "../exec.ts";
+import { ok, run } from "../exec.ts";
 import { makeBoot } from "../boot.ts";
 import { available, canonicalAddress, restoreFromScript, unavailable } from "./common.ts";
 import { renderRules, type RuleFormat } from "./rules.ts";
@@ -60,7 +60,7 @@ export const nftables: Engine = {
     return available(ok(listing) ? parseListing(listing.stdout) : []);
   },
   async apply(io, desired) {
-    await runOrFail(io.exec, "nft", ["-f", "-"], "nft -f", { stdin: script(desired) });
+    await io.shell.must("nft", ["-f", "-"], { stdin: script(desired) });
   },
   async snapshot(io) {
     const listing = await listOurTable(io.exec);

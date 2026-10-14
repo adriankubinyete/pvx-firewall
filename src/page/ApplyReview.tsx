@@ -7,8 +7,7 @@ import type { ListItem, SdkUi } from "@pvx/sdk";
 import type { DiffView, EngineProblem } from "../health/summary.ts";
 import { isEngineProblem } from "../health/summary.ts";
 import { FIX } from "../texts.ts";
-import { reviewCapacity } from "./layout.ts";
-import { rowsAround } from "./rows.ts";
+import { reviewMaxRows } from "./layout.ts";
 
 export interface ApplyReviewProps {
   onApply: () => void;
@@ -58,14 +57,13 @@ export const makeApplyReview = ({ h, Panel, Row: SideBySide, Text, Button, Loadi
     if (!diff) return <Loading label="comparando as regras vivas com as listas…" />;
     const warnings = warningsOf(diff);
     const current = items.find((item) => item.id === selectedId) ?? items[0];
-    const shown = rowsAround(items, current?.id, reviewCapacity(viewport, warnings.length));
     const position = current ? ` ${items.indexOf(current) + 1}/${items.length}` : "";
     return (
       <Panel>
-        <Panel title={`o que muda${position}`} tone="accent">
+        <Panel title={`o que muda${position}`} tone="accent" shrink>
           <Text tone="warn">{headlineOf(diff)}</Text>
           {warnings.map((warning) => <Text key={warning} tone="warn">{warning}</Text>)}
-          {shown.length ? <List items={shown} selected={current?.id} /> : null}
+          {items.length ? <List items={items} selected={current?.id} maxRows={reviewMaxRows(viewport, warnings.length)} /> : null}
         </Panel>
         <SideBySide>
           <Button label="aplicar" primary keys="enter" onPress={onApply} />

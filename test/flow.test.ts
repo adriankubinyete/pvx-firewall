@@ -3,7 +3,7 @@ import { applyFlow, detectSession } from "../src/apply.ts";
 import { nftables, script } from "../src/engines/nft.ts";
 import { ROLLBACK_SECONDS, UNIT, cancel, guard, paths, pendingInfo, schedule } from "../src/rollback.ts";
 import { clearApplyState, clearPending, desiredOf, load } from "../src/state.ts";
-import { fakeExec, fakeFs, io, line, memStore } from "./fake.ts";
+import { fakeExec, fakeFs, io, line, memStore, shellOf } from "./fake.ts";
 
 const SSH = { SSH_CLIENT: "203.0.113.7 5555 22" };
 const p = () => paths();
@@ -68,7 +68,7 @@ test("rollback scheduling: systemd-run with a guarded restore of the saved snaps
   const { exec, calls } = fakeExec();
   const fs = fakeFs();
   const store = memStore();
-  expect(await schedule(exec, fs, store, 1_000_000)).toBe("systemd");
+  expect(await schedule(shellOf(exec), fs, store, 1_000_000)).toBe("systemd");
   expect(calls.map(line)).toEqual([`systemd-run --on-active=${ROLLBACK_SECONDS} --unit=${UNIT} --collect --description=pvx firewall: automatic revert sh -c ${guard(p())}`]);
   expect(guard(p())).toBe(`[ -f '${p().marker}' ] && { sh '${p().script}'; rm -f '${p().marker}'; }; true`);
   expect(store.data.pending).toEqual({ at: 1_000_000, deadline: 1_060_000 });
@@ -76,7 +76,7 @@ test("rollback scheduling: systemd-run with a guarded restore of the saved snaps
 
 test("rollback fallback: when systemd-run fails, a detached nohup sh sleeps 60 then runs the same guard", async () => {
   const { exec, calls } = fakeExec((c) => (c.cmd === "systemd-run" ? { code: 1 } : undefined));
-  expect(await schedule(exec, fakeFs(), memStore())).toBe("sh");
+  expect(await schedule(shellOf(exec), fakeFs(), memStore())).toBe("sh");
   const fb = calls[1]!;
   expect(fb.cmd).toBe("sh");
   expect(fb.args[0]).toBe("-c");
@@ -89,9 +89,9 @@ test("confirm: removing the marker disarms both jobs and the timer is stopped", 
   const { exec, calls } = fakeExec();
   const fs = fakeFs();
   const store = memStore();
-  await schedule(exec, fs, store, Date.now());
+  await schedule(shellOf(exec), fs, store, Date.now());
   expect((await pendingInfo(fs, store)).state).toBe("pending");
-  await cancel(exec, fs);
+  await cancel(shellOf(exec), fs);
   expect(fs.files.has(p().marker)).toBe(false);
   expect(calls.map(line).at(-1)).toBe(`systemctl stop ${UNIT}.timer`);
   store.delete("pending");
@@ -109,7 +109,7 @@ test("pendingInfo: pending counts down, a missing marker means the revert ran, a
 
 test("a failed load restores the snapshot, cancels the revert and reports", async () => {
   const fs = fakeFs();
-  const { exec, calls } = fakeExec((c) => (c.cmd === "nft" && c.args[0] === "-f" ? { code: 1, stderr: "syntax error" } : c.cmd === "nft" ? { code: 1 } : undefined));
+  const { exec, calls } = fakeExec((c) => (c.cmd === "nft" && c.args[0] === "-f" ? { code: 1, lines: ["syntax error"] } : c.cmd === "nft" ? { code: 1 } : undefined));
   const store = memStore();
   const r = await applyFlow(nftables, io(exec, fs), store, { env: SSH });
   expect(r).toMatchObject({ ok: false });
@@ -161,10 +161,10 @@ test("clearPending keeps lastApply; clearApplyState forgets both", () => {
 
 test("when the restore itself fails, the error says so and the revert is still cancelled", async () => {
   const fs = fakeFs();
-  const { exec, calls } = fakeExec((c) => (c.cmd === "nft" && c.args[0] === "-f" ? { code: 1, stderr: "syntax error" } : c.cmd === "sh" && c.args[0] === p().script ? { code: 1, stderr: "disk full" } : c.cmd === "nft" ? { code: 1 } : undefined));
+  const { exec, calls } = fakeExec((c) => (c.cmd === "nft" && c.args[0] === "-f" ? { code: 1, lines: ["syntax error"] } : c.cmd === "sh" && c.args[0] === p().script ? { code: 1, lines: ["disk full"] } : c.cmd === "nft" ? { code: 1 } : undefined));
   const r = await applyFlow(nftables, io(exec, fs), memStore(), { env: SSH });
   expect(r).toMatchObject({ ok: false });
   expect((r as { error: string }).error).toContain("syntax error");
-  expect((r as { error: string }).error).toContain("a restauração também falhou: restore falhou (exit 1): disk full");
+  expect((r as { error: string }).error).toContain(`a restauração também falhou: sh ${p().script} saiu com código 1: disk full`);
   expect(calls.map(line)).toContain(`systemctl stop ${UNIT}.timer`);
 });

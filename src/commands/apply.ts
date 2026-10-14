@@ -6,7 +6,7 @@ import { isEngineProblem, readDiff, readLiveStatus, type DiffView, type LiveStat
 import { ROLLBACK_SECONDS, cancel, describePending, paths, pendingInfo } from "../rollback.ts";
 import { clearApplyState, clearPending } from "../state.ts";
 import { FIX } from "../texts.ts";
-import { engineOrReport } from "./context.ts";
+import { engineOrReport, runOrReport } from "./context.ts";
 
 // ---- status ----
 
@@ -99,7 +99,7 @@ const confirm: CommandDef = {
       ctx.out.warning("a reversão automática já aconteceu: as regras anteriores voltaram");
       return;
     }
-    await cancel(ctx.exec, ctx.fs);
+    await cancel(ctx.shell, ctx.fs);
     clearPending(ctx.store);
     ctx.out.success("apply confirmado; reversão cancelada");
   },
@@ -118,8 +118,8 @@ const revert: CommandDef = {
       ctx.out.error("não há snapshot guardado");
       return;
     }
-    await drivable.engine.restore(drivable.io, script);
-    await cancel(ctx.exec, ctx.fs);
+    if (!(await runOrReport(ctx, () => drivable.engine.restore(drivable.io, script)))) return;
+    await cancel(ctx.shell, ctx.fs);
     clearApplyState(ctx.store);
     ctx.out.success("regras anteriores restauradas");
   },

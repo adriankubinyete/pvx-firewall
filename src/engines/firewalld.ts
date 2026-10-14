@@ -1,6 +1,6 @@
 // firewalld: rich rules with priorities in one zone. firewalld owns nft, so nothing is written to nft beside it.
 // The rules that are ours are told apart by their priority (a set no one else uses).
-import { ok, run, runOrFail, shellQuote } from "../exec.ts";
+import { ok, run, shellQuote } from "../exec.ts";
 import { makeBoot } from "../boot.ts";
 import { available, canonicalAddress, restoreFromScript, unavailable } from "./common.ts";
 import { renderRules, type RuleFormat } from "./rules.ts";
@@ -35,7 +35,7 @@ export const rules = (desired: Desired): string[] => renderRules(desired, FORMAT
 
 const zoneOf = (io: ProbeIo) => io.zone ?? DEFAULT_ZONE;
 const firewallCmd = (io: ProbeIo, args: string[]) => run(io.exec, "firewall-cmd", args);
-const mustFirewallCmd = (io: Io, args: string[]) => runOrFail(io.exec, "firewall-cmd", args, `firewall-cmd ${args.join(" ")}`);
+const mustFirewallCmd = (io: Io, args: string[]) => io.shell.must("firewall-cmd", args);
 const lines = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
 
 /** The rich rules of the zone that carry one of our priorities. */

@@ -1,9 +1,8 @@
 // Automatic revert. Before a change is loaded, a job is scheduled outside pvx that restores the saved snapshot after 60 s,
 // unless `firewall confirm` removed the marker first. It survives pvx exiting and the SSH session dropping:
 // systemd-run owns it, with a detached `sh` as fallback. Both are guarded by the same marker file.
-import type { ModuleFs, Store } from "@pvx/sdk";
-import { ok, run, shellQuote } from "./exec.ts";
-import type { ExecFn } from "./engines/types.ts";
+import type { ModuleFs, Shell, Store } from "@pvx/sdk";
+import { shellQuote } from "./exec.ts";
 import { STORE_KEY, type PendingRevert } from "./state.ts";
 
 export const ROLLBACK_SECONDS = 60;
@@ -54,20 +53,20 @@ export function describePending(pending: Pending): string {
 export type ScheduledBy = "systemd" | "sh";
 
 /** Marks and schedules. Returns how it was scheduled. */
-export async function schedule(exec: ExecFn, fs: ModuleFs, store: Store, now = Date.now()): Promise<ScheduledBy> {
+export async function schedule(shell: Shell, fs: ModuleFs, store: Store, now = Date.now()): Promise<ScheduledBy> {
   const files = paths();
   await fs.write(files.marker, String(now));
   store.set(STORE_KEY.pending, { at: now, deadline: now + ROLLBACK_MS } satisfies PendingRevert);
   const revertCommand = guard(files);
-  const viaSystemd = await run(exec, "systemd-run", [`--on-active=${ROLLBACK_SECONDS}`, `--unit=${UNIT}`, "--collect", "--description=pvx firewall: automatic revert", "sh", "-c", revertCommand]);
-  if (ok(viaSystemd)) return "systemd";
+  const viaSystemd = await shell.ok("systemd-run", [`--on-active=${ROLLBACK_SECONDS}`, `--unit=${UNIT}`, "--collect", "--description=pvx firewall: automatic revert", "sh", "-c", revertCommand]);
+  if (viaSystemd) return "systemd";
   // Fallback: a detached shell with every fd redirected, so ctx.exec does not wait for the sleep.
-  await exec("sh", ["-c", `nohup sh -c ${shellQuote(`sleep ${ROLLBACK_SECONDS}; ${revertCommand}`)} >/dev/null 2>&1 </dev/null &`]);
+  await shell.run("sh", ["-c", `nohup sh -c ${shellQuote(`sleep ${ROLLBACK_SECONDS}; ${revertCommand}`)} >/dev/null 2>&1 </dev/null &`]);
   return "sh";
 }
 
 /** `confirm`: removing the marker is what disarms both jobs; the timer is stopped as well. */
-export async function cancel(exec: ExecFn, fs: ModuleFs): Promise<void> {
+export async function cancel(shell: Shell, fs: ModuleFs): Promise<void> {
   await fs.remove(paths().marker);
-  await run(exec, "systemctl", ["stop", `${UNIT}.timer`]);
+  await shell.run("systemctl", ["stop", `${UNIT}.timer`]);
 }

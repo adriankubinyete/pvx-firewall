@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { collect, filterCandidates, parsePeers } from "../src/asterisk.ts";
-import { fakeExec } from "./fake.ts";
+import { fakeExec, shellOf } from "./fake.ts";
 
 const SIP = `Name/username             Host                                    Dyn Forcerport Comedia    ACL Port     Status      Description
 1000/1000                 189.10.20.30                            D  Yes        Yes            5060     OK (12 ms)
@@ -49,10 +49,10 @@ test("filters private, loopback, own host and already-trusted IPs; names every p
 
 test("collect asks asterisk -rx for sip and pjsip; a missing asterisk is reported, not an error", async () => {
   const { exec, calls } = fakeExec((c) => (c.args[1] === "sip show peers" ? { stdout: SIP } : undefined));
-  const r = await collect(exec);
+  const r = await collect(shellOf(exec));
   expect(calls.map((c) => c.args.join(" "))).toEqual(["-rx sip show peers", "-rx pjsip show contacts", "-rx pjsip show endpoints"]);
   expect(r.asterisk).toBe(true);
   expect(r.peers).toHaveLength(3);
-  const none = await collect(fakeExec(() => ({ code: 127 })).exec);
+  const none = await collect(shellOf(fakeExec(() => ({ code: 127 })).exec));
   expect(none).toEqual({ peers: [], asterisk: false });
 });

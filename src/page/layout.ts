@@ -1,5 +1,5 @@
 // How the page spends the terminal. Pure, so the frame tests and the page agree on the numbers.
-// A page does not scroll and the `List` does not window, so the lists show only the rows that fit around the selected one.
+// The `List` windows itself (`maxRows`) around the selection; these are the numbers it gets, and `Panel shrink` is the net under them.
 
 export interface Viewport {
   cols: number;
@@ -30,7 +30,7 @@ const MIN_ENTRY_ROWS = 2;
 
 export interface ListLayout {
   sideBySide: boolean;
-  /** Entry rows each list shows; 0 means the panel is collapsed to its title. */
+  /** `List maxRows` of each list; 0 means the panel is collapsed to its title. */
   capacity: Record<ListPanelId, number>;
 }
 
@@ -55,9 +55,9 @@ export function listLayout(viewport: Viewport, active: ListPanelId, actionRows: 
   return { sideBySide: false, capacity: active === "ips" ? { ips: activeRows, ports: 0 } : { ips: 0, ports: activeRows } };
 }
 
-/** Rule lines the apply review shows: what is left after the frame, the headline, the warnings and the buttons line. */
-const REVIEW_FIXED_LINES = 2;
+/** What the review spends besides its rules: the host's rows, the panel frame, the headline and the buttons line. */
+const REVIEW_CHROME_ROWS = HOST_CHROME_ROWS + PANEL_FRAME_ROWS + 2;
 const MIN_REVIEW_ROWS = 3;
 
-export const reviewCapacity = (viewport: Viewport, warningLines: number): number =>
-  Math.max(MIN_REVIEW_ROWS, viewport.rows - HOST_CHROME_ROWS - PANEL_FRAME_ROWS - REVIEW_FIXED_LINES - warningLines);
+/** `List maxRows` of the review: the rules that fit under the headline and the warnings. */
+export const reviewMaxRows = (viewport: Viewport, warningLines: number): number => Math.max(MIN_REVIEW_ROWS, viewport.rows - REVIEW_CHROME_ROWS - warningLines);

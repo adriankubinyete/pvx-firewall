@@ -5,10 +5,11 @@
 import type { SdkUi } from "@pvx/sdk";
 import type { StatusView } from "../health/queries.ts";
 import type { FwState } from "../state.ts";
+import { needsApplyNotice } from "../texts.ts";
 import { makeEntryPanel } from "./EntryPanel.tsx";
 import { makeStatusPanel } from "./StatusPanel.tsx";
 import { listLayout, type ListPanelId } from "./layout.ts";
-import type { Notice } from "./outcome.ts";
+import { needsApplyReason } from "./status-lines.ts";
 import { KIND_OF_PANEL, panelRows, rowIds, type ActionId, type EntryKind, type EntryRow, type PanelRows } from "./rows.ts";
 
 /** How often the status panel asks the engine again. Each ask runs a few read-only probes. */
@@ -44,7 +45,6 @@ export interface MainScreenProps {
   onSelectionChange: (selection: Selection) => void;
   /** Bumped after every change: the status query asks again. */
   revision: number;
-  notice?: Notice;
   onAdd: (kind: EntryKind) => void;
   onEdit: (row: EntryRow) => void;
   onTrust: () => void;
@@ -52,7 +52,7 @@ export interface MainScreenProps {
 }
 
 export const makeMainScreen = (ui: SdkUi) => {
-  const { h, Panel, Row: SideBySide, Text, Button, useState, useRef, useKey, useBack, useNudge, usePanels, usePageFocused, useQuery, useViewport } = ui;
+  const { h, Panel, Row: SideBySide, Text, Notice, Button, useRef, useKey, useBack, useNudge, usePanels, usePageFocused, useQuery, useViewport } = ui;
   const StatusPanel = makeStatusPanel(ui);
   const EntryPanel = makeEntryPanel(ui);
 
@@ -96,13 +96,13 @@ export const makeMainScreen = (ui: SdkUi) => {
     return null;
   }
 
-  return function MainScreen({ lists, focus, onFocusChange: setFocus, selection, onSelectionChange: setSelection, revision, notice, onAdd, onEdit, onTrust, onReview }: MainScreenProps) {
+  return function MainScreen({ lists, focus, onFocusChange: setFocus, selection, onSelectionChange: setSelection, revision, onAdd, onEdit, onTrust, onReview }: MainScreenProps) {
     const panels = usePanels();
     const nudge = useNudge();
     const viewport = useViewport();
     const pageFocused = usePageFocused();
-    const [refreshes, setRefreshes] = useState(0);
-    const status = useQuery<StatusView>("firewall.status", [revision, refreshes], { refreshMs: STATUS_REFRESH_MS });
+    const status = useQuery<StatusView>("firewall.status", [revision], { refreshMs: STATUS_REFRESH_MS });
+    const pendingReason = needsApplyReason(status.data);
     // A mouse down bubbles from a row to its panel: the row marks it so the panel does not undo what the row did.
     const rowPressed = useRef(false);
 
@@ -189,12 +189,12 @@ export const makeMainScreen = (ui: SdkUi) => {
       <Panel>
         {focus.inside ? <InsideKeys onKey={press} /> : <PanelLevelKeys onKey={press} />}
         <JumpKeys onJump={(panel) => setFocus({ panel, inside: false })} />
-        <RefreshKey onRefresh={() => setRefreshes(refreshes + 1)} />
+        <RefreshKey onRefresh={() => void status.refetch()} />
         {focus.panel === "status" ? null : <AddKey onAdd={() => onAdd(KIND_OF_PANEL[activeList])} />}
         {focus.panel === "ips" ? <TrustKey onTrust={onTrust} /> : null}
         <SideBySide>
           <Button label="aplicar" primary keys="A" onPress={onReview} />
-          {notice ? <Text tone={notice.tone}>{notice.text}</Text> : <Text tone="dim"> </Text>}
+          {pendingReason ? <Notice level="warn">{needsApplyNotice(pendingReason)}</Notice> : <Text tone="dim"> </Text>}
         </SideBySide>
         <StatusPanel title={PANEL_TITLE.status} status={status} focused={focusedPanel("status")} panelRef={panels.ref("status")} onPress={pressPanel("status")} />
         {layout.sideBySide ? <SideBySide>{listPanels}</SideBySide> : listPanels}

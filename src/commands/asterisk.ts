@@ -48,7 +48,7 @@ const trustAsterisk: CommandDef = {
   help: "Revisa os IPs públicos dos peers do Asterisk; só grava com --accept",
   args: [{ name: "accept", help: "`all` ou IPs separados por vírgula, depois de revisar a lista", kind: "option" }],
   async run(ctx) {
-    const { peers, asterisk } = await collect(ctx.exec);
+    const { peers, asterisk } = await collect(ctx.shell);
     if (!asterisk) {
       saveReview(ctx, []);
       ctx.out.warning("asterisk não encontrado neste host: nada a revisar");

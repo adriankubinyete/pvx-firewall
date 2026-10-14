@@ -77,9 +77,9 @@ test("nftables apply: one nft -f - with the table text; nothing else", async () 
   expect(calls[0]!.stdin).toBe(nftScript(sample));
 });
 
-test("nftables apply: a failure throws with nft's message", async () => {
-  const { exec } = fakeExec(() => ({ code: 1, stderr: "syntax error" }));
-  await expect(nftables.apply(io(exec), sample)).rejects.toThrow("syntax error");
+test("nftables apply: a failure throws a StepError with nft's message", async () => {
+  const { exec } = fakeExec(() => ({ code: 1, lines: ["syntax error"] }));
+  await expect(nftables.apply(io(exec), sample)).rejects.toMatchObject({ name: "StepError", output: ["syntax error"] });
 });
 
 test("nftables snapshot: existing table is restored, absent table is deleted", async () => {

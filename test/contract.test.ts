@@ -4,14 +4,12 @@ import factory from "../src/index.tsx";
 import { paths, stateDir } from "../src/rollback.ts";
 import { desiredOf, listsFingerprint, removeEntry, seed } from "../src/state.ts";
 import { nftables } from "../src/engines/nft.ts";
-import { fakeExec, fakeFs, fakeSdk, memStore, type Call } from "./fake.ts";
+import { fakeExec, fakeFs, fakeReadCtx, fakeSdk, fakeSystem, memStore, type Call } from "./fake.ts";
 
 const build = (fs = fakeFs()) => ({ fs, def: factory(fakeSdk(fs)) });
 const cap = (def: ModuleDef, id: string) => def.capabilities!.find((c) => c.id === id)!;
-const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 // The read-only context the host hands to prove, queries and widgets: `this` for the queries.
-const noJobs: ReadCtx["jobs"] = { status: async () => ({ state: "none" }), list: async () => [], log: async () => [] };
-const ctx = (store: ReturnType<typeof memStore>, fs = fakeFs(), exec = fakeExec().exec): ReadCtx => ({ store, log: quiet, query: () => undefined, exec, fs, jobs: noJobs });
+const ctx = (store: ReturnType<typeof memStore>, fs = fakeFs(), exec = fakeExec().exec): ReadCtx => fakeReadCtx({ ...fakeSystem(), store, fs, exec });
 /** An exec for a host with nftables whose live rules are `rules` (none: the table is gone). */
 const nftHost = (rules?: string[]) =>
   fakeExec((c: Call) => (c.cmd === "nft" && c.args[0] === "list" ? (rules ? { stdout: `table ip pvx {\n\tchain input {\n\t\ttype filter hook input priority -10; policy accept;\n${rules.map((r) => `\t\t${r}\n`).join("")}\t}\n}\n` } : { code: 1 }) : { stdout: "nftables v1" })).exec;

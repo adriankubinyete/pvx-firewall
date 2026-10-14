@@ -64,7 +64,7 @@ test("boot disable disables, removes the unit, reloads; status reads is-enabled"
   expect(await ENGINES.iptables.bootStatus(io(fakeExec(() => ({ code: 1, stdout: "disabled\n" })).exec))).toBe("disabled");
 });
 
-test("a failing systemctl enable surfaces", async () => {
-  const { exec } = fakeExec((c) => (c.args[0] === "enable" ? { code: 1, stderr: "boom" } : undefined));
-  await expect(ENGINES.nftables.bootEnable(io(exec), "/x")).rejects.toThrow("boom");
+test("a failing systemctl enable surfaces as a StepError", async () => {
+  const { exec } = fakeExec((c) => (c.args[0] === "enable" ? { code: 1, lines: ["boom"] } : undefined));
+  await expect(ENGINES.nftables.bootEnable(io(exec), "/x")).rejects.toMatchObject({ name: "StepError", code: 1, output: ["boom"] });
 });

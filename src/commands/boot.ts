@@ -2,7 +2,7 @@
 import type { CommandDef } from "@pvx/sdk";
 import { BOOT_ARGS, DEFAULT_BIN, UNIT_NAME, unitText } from "../boot.ts";
 import { ENGINES, engineSettingOf, pickEngine } from "../engines/index.ts";
-import { ioOf } from "./context.ts";
+import { ioOf, runOrReport } from "./context.ts";
 
 /** The unit is the same for every engine except its ordering after firewalld, so a host with no engine gets the nftables one. */
 const FALLBACK_ENGINE = ENGINES.nftables;
@@ -22,7 +22,7 @@ const bootEnable: CommandDef = {
       for (const line of unitText(pvxBin, engine.id).split("\n")) ctx.out.plain(line);
       return;
     }
-    await engine.bootEnable(ioOf(ctx), pvxBin);
+    if (!(await runOrReport(ctx, () => engine.bootEnable(ioOf(ctx), pvxBin)))) return;
     ctx.out.success(`start-on-boot habilitado (${UNIT_NAME}: ${pvxBin} ${BOOT_ARGS.join(" ")})`);
   },
 };

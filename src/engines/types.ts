@@ -1,12 +1,13 @@
-import type { ExecOpts, ExecResult, ModuleFs } from "@pvx/sdk";
+import type { ExecOpts, ExecResult, ModuleFs, Shell } from "@pvx/sdk";
 
 export type ExecFn = (cmd: string, args?: string[], opts?: ExecOpts) => Promise<ExecResult>;
 export type EngineId = "firewalld" | "nftables" | "iptables";
 export type BootStatus = "enabled" | "disabled";
 
-/** What an engine needs from the host: `ctx.exec` and `ctx.fs` (tests hand it fakes). */
+/** What an engine needs from the host: `ctx.exec`, `ctx.shell` and `ctx.fs` (tests hand it fakes). */
 export interface Io {
   exec: ExecFn;
+  shell: Shell;
   fs: ModuleFs;
   /** firewalld zone; default `pvxfw`. */
   zone?: string;
