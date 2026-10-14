@@ -5,7 +5,7 @@
 // Every change is one of the module's own commands (useCommand), so it lands in the scrollback, the history and the audit.
 import type { CommandRun, SdkUi } from "@pvx/sdk";
 import { STORE_KEY, load, type PendingRevert } from "../state.ts";
-import { makeApplyReview } from "./ApplyReview.tsx";
+import { makeApplyReview, type ApplyChoice } from "./ApplyReview.tsx";
 import { makeCountdown } from "./Countdown.tsx";
 import { makeEntryForm, type FormTarget } from "./EntryForm.tsx";
 import { INITIAL_FOCUS, INITIAL_SELECTION, makeMainScreen, type Focus, type Selection } from "./MainScreen.tsx";
@@ -67,9 +67,9 @@ export function makeFirewall(ui: SdkUi) {
       settle(await attempt(action));
     };
 
-    const applyLists = async () => {
+    const applyLists = async (choice: ApplyChoice) => {
       setScreen({ name: "busy", label: "aplicando…" });
-      const run = await attempt(commands.apply);
+      const run = await attempt(() => commands.apply(choice));
       const pending = store.get<PendingRevert>(STORE_KEY.pending);
       if (run.exit === 0 && pending) {
         setRevision(revision + 1);
@@ -96,7 +96,7 @@ export function makeFirewall(ui: SdkUi) {
           />
         );
       case "review":
-        return <ApplyReview onApply={() => void applyLists()} onCancel={backToMain} onFailure={(message) => setScreen({ name: "result", run: failedRun(message) })} />;
+        return <ApplyReview lists={lists} onApply={(choice) => void applyLists(choice)} onCancel={backToMain} onFailure={(message) => setScreen({ name: "result", run: failedRun(message) })} />;
       case "busy":
         return <Loading label={screen.label} />;
       case "countdown":

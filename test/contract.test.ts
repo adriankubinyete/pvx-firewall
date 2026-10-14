@@ -100,3 +100,17 @@ test("widgets: chip says engine and rule count with a level; attention lists the
   const slots: SlotData[] = [await chip(), await att()];
   expect(slots).toHaveLength(2);
 });
+
+test("firewall.diff counts the informed IP as the failsafe, and ignores an argument that is not an IPv4", async () => {
+  const { def } = build();
+  const query = def.queries!["firewall.diff"]!;
+  const host = nftHost(["drop"]);
+  const readCtx = ctx(memStore(), fakeFs(), host); // no session: sshClient undefined
+  expect(await query.call(readCtx, "firewall.diff")).toMatchObject({ session: undefined });
+  const informed = (await query.call(readCtx, "firewall.diff", "198.51.100.4")) as { session?: string; added: string[] };
+  expect(informed.session).toBe("198.51.100.4");
+  expect(informed.added).toContain("ip saddr 198.51.100.4 accept");
+  expect(await query.call(readCtx, "firewall.diff", "10.0.0.0/8")).toMatchObject({ session: undefined });
+  const withSession = fakeReadCtx({ ...fakeSystem({ sshClient: "203.0.113.7" }), exec: host });
+  expect(await query.call(withSession, "firewall.diff")).toMatchObject({ session: "203.0.113.7" });
+});

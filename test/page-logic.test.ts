@@ -5,6 +5,7 @@ import { newEntryOf, validateNewEntry } from "../src/page/EntryForm.tsx";
 import { listLayout, reviewMaxRows, type ListPanelId } from "../src/page/layout.ts";
 import { headlineOf } from "../src/page/outcome.ts";
 import { panelRows, positionText } from "../src/page/rows.ts";
+import { hasFailsafe, informedIpError, joinFit, rowText, summaryRows } from "../src/page/review.ts";
 import { seed } from "../src/state.ts";
 
 const ACTION_ROWS = { ips: 2, ports: 1 };
@@ -36,7 +37,7 @@ test("side by side from 120 columns; stacked below, the focused list gets the he
 });
 
 test("the review shows at least a few rules, even in a short terminal", () => {
-  expect(reviewMaxRows({ cols: 80, rows: 24 }, 2)).toBeGreaterThanOrEqual(3);
+  expect(reviewMaxRows({ cols: 80, rows: 24 })).toBeGreaterThanOrEqual(3);
 });
 
 test("the IP panel has the two action rows, the port panel one; entries are by list and value", () => {
@@ -68,4 +69,32 @@ test("the headline of a run is the error, else the success or warning, else the 
   expect(headlineOf(run(0, info, { kind: "success", text: "b" }))).toEqual({ text: "b", tone: "ok" });
   expect(headlineOf(run(0, info))).toEqual({ text: "a", tone: "info" });
   expect(headlineOf(run(2))).toEqual({ text: "saiu 2", tone: "error" });
+});
+
+// ---- the apply review ----
+
+const diffOf = (overrides: Partial<{ added: string[]; removed: string[]; session: string }> = {}) => ({ added: [], removed: [], missingBaseIps: [], ...overrides });
+
+test("joinFit cuts at a whole value and ends with an ellipsis; what fits stays whole", () => {
+  expect(joinFit(["a", "b"], 10)).toBe("a, b");
+  expect(joinFit(["127.0.0.1", "10.0.0.0/8", "172.16.0.0/12"], 30)).toBe("127.0.0.1, 10.0.0.0/8, …");
+  expect(joinFit(["172.16.0.0/12"], 5)).toBe("…");
+});
+
+test("the summary groups the lists, skips empty optional ones and adds `removidas` only when rules would leave", () => {
+  const lists = seed("t");
+  const plain = summaryRows(lists, diffOf({ added: ["x"] }), 60);
+  expect(plain.map((row) => row.label)).toEqual(["IPs aceitos", "portas liberadas", "portas bloqueadas", "o resto"]);
+  expect(plain[0]).toMatchObject({ count: "13" });
+  const dropping = summaryRows(lists, diffOf({ removed: ["a", "b"] }), 60);
+  expect(dropping.at(-1)).toMatchObject({ label: "removidas", count: "2" });
+  expect(rowText(plain[0]!)).toMatch(/^IPs aceitos\s+13  127\.0\.0\.1/);
+  expect(rowText(plain.at(-1)!)).toContain("bloqueado");
+});
+
+test("a failsafe exists when the diff has an IP; the informed IP must be a single IPv4", () => {
+  expect(hasFailsafe(diffOf({ session: "1.2.3.4" }))).toBe(true);
+  expect(hasFailsafe(diffOf())).toBe(false);
+  expect(informedIpError(" 198.51.100.4 ")).toBeUndefined();
+  for (const bad of ["", "300.1.1.1", "10.0.0.0/8", "abc"]) expect(informedIpError(bad)).toContain("IP inválido");
 });

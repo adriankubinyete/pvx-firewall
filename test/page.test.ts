@@ -33,8 +33,9 @@ const until = async (target: TuiHarness, matches: (frame: string) => boolean, ti
 const untilShows = (target: TuiHarness, text: string) => until(target, (frame) => frame.includes(text));
 
 /** The page, once the status query has answered. */
-const open = async (cols = 120, rows = 30, sshClient: string | undefined = SSH_CLIENT_IP) => {
-  page = await renderPage(moduleDir, "firewall", { cols, rows, sshClient });
+/** `sshClient` null: a console login, no SSH client. */
+const open = async (cols = 120, rows = 30, sshClient: string | null = SSH_CLIENT_IP) => {
+  page = await renderPage(moduleDir, "firewall", { cols, rows, sshClient: sshClient ?? undefined });
   await untilShows(page, "status:");
   return page;
 };
@@ -169,7 +170,7 @@ test("the action rows and the aplicar button react to the click", async () => {
   await p.press("ESCAPE");
   const apply = positionOf(p.frame(), "[ aplicar ]");
   await p.click(apply.x + 2, apply.y);
-  await until(p, (frame) => frame.includes("o que muda"));
+  await until(p, (frame) => frame.includes("aplicar firewall"));
 });
 
 // ---- forms ----
@@ -273,10 +274,9 @@ test("an error opens a result screen with the cause and stays until it is closed
 test("A: reviews the diff, the host confirms, then the countdown; enter confirms the access", async () => {
   const p = await open();
   await p.press("A", { shift: true });
-  const review = await untilShows(p, "o que muda");
-  expect(review).toContain("+ ip saddr 203.0.113.7 accept");
-  expect(review).toMatch(/um apply adicionaria \d+ e removeria 0 regra/);
-  await p.press("RETURN");
+  const review = await untilShows(p, "aplicar firewall");
+  expect(review).toContain("sessão 203.0.113.7 fica liberada (failsafe)");
+  await p.press("RETURN"); // safe: enter applies
   await untilShows(p, "confirmar `firewall apply`? s/N"); // the host asks first: apply is destructive
   expect(nftWasLoaded()).toBe(false);
   await p.press("s");
@@ -298,7 +298,7 @@ test("lists that differ from what is applied show the page notice next to aplica
 test("A then n cancels without touching the firewall", async () => {
   const p = await open();
   await p.press("A", { shift: true });
-  await untilShows(p, "o que muda");
+  await untilShows(p, "aplicar firewall");
   await p.press("n");
   expect(p.frame()).toContain("[1] status");
   expect(nftWasLoaded()).toBe(false);
@@ -307,8 +307,101 @@ test("A then n cancels without touching the firewall", async () => {
 test("A then esc also cancels", async () => {
   const p = await open();
   await p.press("A", { shift: true });
-  await untilShows(p, "o que muda");
+  await untilShows(p, "aplicar firewall");
   await p.press("ESCAPE");
   expect(p.frame()).toContain("[1] status");
   expect(nftWasLoaded()).toBe(false);
+});
+
+// ---- the apply confirmation screen ----
+
+const reviewFrame = async (cols: number, rows: number, sshClient: string | null = null) => {
+  const p = await open(cols, rows, sshClient);
+  await p.press("A", { shift: true });
+  return { p, frame: await untilShows(p, "aplicar firewall") };
+};
+
+const SUMMARY_LABELS = ["IPs aceitos", "portas liberadas", "portas bloqueadas", "o resto", "bloqueado", "depois de aplicar: 60s para confirmar", "[ aplicar ]", "[ cancelar ]"];
+const SIZES: [number, number][] = [[80, 24], [120, 40]];
+
+test("review with the session IP: the failsafe line, the grouped summary, one set of keys, no raw rules", async () => {
+  for (const [cols, rows] of SIZES) {
+    const { p, frame } = await reviewFrame(cols, rows, SSH_CLIENT_IP);
+    for (const text of ["[✓]", "sessão 203.0.113.7 fica liberada (failsafe)", ...SUMMARY_LABELS]) expect(frame).toContain(text);
+    expect(frame).toMatch(/IPs aceitos\s+13\s+127\.0\.0\.1/);
+    expect(frame).toMatch(/portas bloqueadas\s+14\s+995\/udp/);
+    expect(frame).toMatch(/\[ ver as \d+ regras \]/);
+    expect(frame).not.toContain("informar meu IP");
+    expect(frame).not.toContain("ip saddr"); // the raw rules wait behind `d`
+    expect(frame).not.toContain("removidas"); // nothing to drop on a fresh host
+    expect(frame.split("\n").every((line) => line.length <= cols)).toBe(true);
+    expect(frame.match(/enter aplicar/g)?.length ?? 0).toBeLessThanOrEqual(1); // the keys are in the footer once
+    p.destroy();
+  }
+});
+
+test("review without the session IP: the warning with its two buttons, and enter does not apply", async () => {
+  for (const [cols, rows] of SIZES) {
+    const { p, frame } = await reviewFrame(cols, rows);
+    for (const text of ["[!]", "Não achei o IP da sua sessão SSH", "sem ele não há failsafe", "[ informar meu IP ]", "[ aplicar sem failsafe ]", ...SUMMARY_LABELS]) expect(frame).toContain(text);
+    expect(frame).not.toContain("fica liberada");
+    await p.press("RETURN"); // not safe: enter walks to the warning's buttons
+    await p.flush();
+    expect(p.frame()).toContain("aplicar firewall");
+    expect(nftWasLoaded()).toBe(false);
+    expect(anyCall("systemd-run")).toBe(false);
+    p.destroy();
+  }
+});
+
+test("d shows the raw rules and esc brings the summary back; the rules are not loaded", async () => {
+  const { p } = await reviewFrame(120, 40, SSH_CLIENT_IP);
+  await p.press("d");
+  const details = await untilShows(p, "regras que mudam");
+  expect(details).toContain("+ ip saddr 203.0.113.7 accept");
+  expect(details).toContain("+ tcp dport 80 drop");
+  await p.press("ESCAPE");
+  expect(await untilShows(p, "aplicar firewall")).toContain("IPs aceitos");
+  expect(nftWasLoaded()).toBe(false);
+});
+
+test("informar meu IP validates, then the apply uses it as the failsafe (--failsafe-ip)", async () => {
+  const { p } = await reviewFrame(120, 30);
+  const button = positionOf(p.frame(), "[ informar meu IP ]");
+  await p.click(button.x + 2, button.y);
+  await untilShows(p, "meu IP");
+  await p.type("300.1.1.1");
+  await p.press("RETURN");
+  expect(p.frame()).toContain("IP inválido: 300.1.1.1");
+  for (let i = 0; i < "300.1.1.1".length; i++) await p.press("BACKSPACE");
+  await p.type("198.51.100.4");
+  await p.press("RETURN");
+  const summary = await untilShows(p, "IP 198.51.100.4 informado fica liberado (failsafe)");
+  expect(summary).not.toContain("Não achei");
+  await p.press("RETURN");
+  await untilShows(p, "confirmar `firewall apply`? s/N");
+  await p.press("s");
+  await untilShows(p, "ainda tem acesso?");
+  expect(stubs.loaded()).toContain("ip saddr 198.51.100.4 accept");
+});
+
+test("aplicar sem failsafe goes through the host's confirmation, then applies with --force", async () => {
+  const { p } = await reviewFrame(120, 30);
+  const button = positionOf(p.frame(), "[ aplicar sem failsafe ]");
+  await p.click(button.x + 2, button.y);
+  await untilShows(p, "confirmar `firewall apply`? s/N");
+  expect(nftWasLoaded()).toBe(false); // nothing runs before the host's confirmation
+  await p.press("s");
+  await untilShows(p, "ainda tem acesso?");
+  expect(nftWasLoaded()).toBe(true);
+});
+
+test("without a failsafe IP, enter focuses the warning's buttons; right moves, enter opens the IP field", async () => {
+  const { p } = await reviewFrame(120, 30);
+  await p.press("RETURN");
+  await p.press("RETURN"); // the first button is `informar meu IP`
+  await untilShows(p, "meu IP");
+  expect(nftWasLoaded()).toBe(false);
+  await p.press("ESCAPE");
+  expect(await untilShows(p, "aplicar firewall")).toContain("[ informar meu IP ]");
 });

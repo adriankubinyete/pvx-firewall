@@ -55,9 +55,9 @@ export function listLayout(viewport: Viewport, active: ListPanelId, actionRows: 
   return { sideBySide: false, capacity: active === "ips" ? { ips: activeRows, ports: 0 } : { ips: 0, ports: activeRows } };
 }
 
-/** What the review spends besides its rules: the host's rows, the panel frame, the headline and the buttons line. */
+/** What the details view spends besides its rules: the host's rows, the panel frame and the line that names the keys. */
 const REVIEW_CHROME_ROWS = HOST_CHROME_ROWS + PANEL_FRAME_ROWS + 2;
 const MIN_REVIEW_ROWS = 3;
 
-/** `List maxRows` of the review: the rules that fit under the headline and the warnings. */
-export const reviewMaxRows = (viewport: Viewport, warningLines: number): number => Math.max(MIN_REVIEW_ROWS, viewport.rows - REVIEW_CHROME_ROWS - warningLines);
+/** `List maxRows` of the details view: the rules that fit on the screen. */
+export const reviewMaxRows = (viewport: Viewport): number => Math.max(MIN_REVIEW_ROWS, viewport.rows - REVIEW_CHROME_ROWS);
