@@ -2,25 +2,19 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runSession } from "@pvx/testing";
-import { installStubs, type Stubs } from "./stubs.ts";
+import { SSH_CLIENT_IP, installStubs, withSshSession, type Stubs } from "./stubs.ts";
 
 const dir = join(import.meta.dir, "..");
 
+withSshSession();
+
 let stubs: Stubs;
-const ssh = process.env.SSH_CLIENT;
 const setup = (programs: string[]) => {
   stubs?.restore();
   stubs = installStubs(programs);
 };
-beforeEach(() => {
-  setup(["nft", "systemctl", "systemd-run", "who", "asterisk"]);
-  process.env.SSH_CLIENT = "203.0.113.7 5555 22";
-});
-afterEach(() => {
-  stubs.restore();
-  if (ssh === undefined) delete process.env.SSH_CLIENT;
-  else process.env.SSH_CLIENT = ssh;
-});
+beforeEach(() => setup(["nft", "systemctl", "systemd-run", "who", "asterisk"]));
+afterEach(() => stubs.restore());
 
 test("status with no engine on the host: a clean error, exit 1, nothing run", async () => {
   setup([]);
@@ -45,7 +39,7 @@ test("ip accept validates, dedupes, and keeps the 13 seeded base IPs (regression
 
 test("ip deny refuses the current SSH IP and any range that holds it", async () => {
   const s = await runSession(dir);
-  for (const v of ["203.0.113.7", "203.0.113.0/24", "0.0.0.0/0"]) {
+  for (const v of [SSH_CLIENT_IP, "203.0.113.0/24", "0.0.0.0/0"]) {
     const r = await s.run(`firewall ip deny ${v}`);
     expect(r.exit).toBe(1);
     expect(r.text).toContain("IP da sua sessão");

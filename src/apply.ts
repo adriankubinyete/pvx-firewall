@@ -1,67 +1,100 @@
 // The apply flow: snapshot, failsafe, scheduled revert, load, verify. Everything goes through the injected `exec` and `fs`.
-import type { ModuleFs, Store } from "@pvx/sdk";
+// The safety order is the contract: detect the session, snapshot (only if nothing is pending), schedule the revert,
+// load, verify the failsafe rule is really loaded, and only then record.
+import type { Store } from "@pvx/sdk";
 import type { Engine, ExecFn, Io } from "./engines/types.ts";
-import { run } from "./exec.ts";
+import { errorMessage, run } from "./exec.ts";
 import { sessionIp } from "./net.ts";
-import { cancel, pendingInfo, paths, schedule, ROLLBACK_SECONDS } from "./rollback.ts";
-import { actor, desiredOf, keyOf, load } from "./state.ts";
+import { cancel, paths, pendingInfo, schedule, type ScheduledBy } from "./rollback.ts";
+import { STORE_KEY, actor, clearPending, desiredOf, listsFingerprint, load, type FwState, type LastApply } from "./state.ts";
+
+type Env = Record<string, string | undefined>;
 
 /** The SSH client: `SSH_CLIENT`, else `who -m`. Undefined when neither says (console, serial). */
-export async function detectSession(exec: ExecFn, env: Record<string, string | undefined> = process.env): Promise<string | undefined> {
+export async function detectSession(exec: ExecFn, env: Env = process.env): Promise<string | undefined> {
   const fromEnv = sessionIp(env);
   if (fromEnv) return fromEnv;
   return sessionIp({}, (await run(exec, "who", ["-m"])).stdout);
 }
 
-export interface ApplyOpts {
+export interface ApplyOptions {
   force?: boolean;
   noRollback?: boolean;
-  env?: Record<string, string | undefined>;
+  env?: Env;
   now?: number;
 }
-export type ApplyResult = { ok: true; failsafe?: string; rules: number; scheduled?: "systemd" | "sh" } | { ok: false; error: string };
+export type ApplyResult = { ok: true; failsafe?: string; rules: number; scheduled?: ScheduledBy } | { ok: false; error: string };
 
-export async function applyFlow(engine: Engine, io: Io, store: Store, o: ApplyOpts = {}): Promise<ApplyResult> {
-  const now = o.now ?? Date.now();
-  const failsafe = await detectSession(io.exec, o.env);
-  if (!failsafe && !o.force) return { ok: false, error: "não achei o IP da sessão SSH (SSH_CLIENT, who -m): sem o failsafe a aplicação pode derrubar o acesso. Use --force para aplicar assim mesmo" };
+const NO_SESSION_MESSAGE =
+  "não achei o IP da sessão SSH (SSH_CLIENT, who -m): sem o failsafe a aplicação pode derrubar o acesso. Use --force para aplicar assim mesmo";
 
-  const st = load(store);
-  const d = desiredOf(st, failsafe);
-  const p = paths();
+export async function applyFlow(engine: Engine, io: Io, store: Store, options: ApplyOptions = {}): Promise<ApplyResult> {
+  const now = options.now ?? Date.now();
+  const failsafe = await detectSession(io.exec, options.env);
+  if (!failsafe && !options.force) return { ok: false, error: NO_SESSION_MESSAGE };
 
-  // The snapshot is of the state BEFORE the first unconfirmed apply: a second apply while one is pending keeps the older one.
-  const pend = await pendingInfo(io.fs, store, now);
-  if (pend.state !== "pending") await io.fs.write(p.script, await engine.snapshot(io));
-
-  let scheduled: "systemd" | "sh" | undefined;
-  if (!o.noRollback) scheduled = await schedule(io.exec, io.fs, store, now);
-
-  const undo = async (why: string): Promise<ApplyResult> => {
-    let extra = "";
-    try {
-      await engine.restore(io, p.script);
-    } catch (e) {
-      extra = `; a restauração também falhou: ${(e as Error).message}`;
-    }
-    if (scheduled) await cancel(io.exec, io.fs);
-    store.delete("pending");
-    return { ok: false, error: `${why}; regras anteriores restauradas${extra}` };
-  };
+  const lists = load(store);
+  await snapshotUnlessPending(engine, io, store, now);
+  const scheduled = options.noRollback ? undefined : await schedule(io.exec, io.fs, store, now);
+  const undo = (why: string) => undoApply(engine, io, store, scheduled !== undefined, why);
 
   try {
-    await engine.apply(io, d);
-  } catch (e) {
-    return undo((e as Error).message);
+    await engine.apply(io, desiredOf(lists, failsafe));
+  } catch (error) {
+    return undo(errorMessage(error));
   }
-  // Verified, not assumed: the failsafe rule must be loaded.
-  const after = await engine.status(io);
-  const rule = engine.render({ ipAccept: [], ipDeny: [], portAccept: [], portDeny: [], failsafe })[0]!;
-  if (failsafe && !after.rules.includes(rule)) {
+
+  const loaded = await engine.status(io);
+  if (failsafe && !loaded.rules.includes(engine.failsafeRule(failsafe))) {
     return undo(`o IP da sessão (${failsafe}) não apareceu entre as regras carregadas`);
   }
-  store.set("lastApply", { at: new Date(now).toISOString(), by: actor(o.env ?? process.env), engine: engine.id, key: keyOf(st), rules: after.rules.length, failsafe, rollback: scheduled !== undefined });
-  return { ok: true, failsafe, rules: after.rules.length, scheduled };
+  recordApply(store, { engine, lists, failsafe, rules: loaded.rules.length, scheduled, now, env: options.env });
+  return { ok: true, failsafe, rules: loaded.rules.length, scheduled };
 }
 
-export const ROLLBACK_MS = ROLLBACK_SECONDS * 1000;
+/** The snapshot is of the state BEFORE the first unconfirmed apply: a second apply while one is pending keeps the older one. */
+async function snapshotUnlessPending(engine: Engine, io: Io, store: Store, now: number): Promise<void> {
+  const pending = await pendingInfo(io.fs, store, now);
+  if (pending.state === "pending") return;
+  await io.fs.write(paths().script, await engine.snapshot(io));
+}
+
+/**
+ * A load that failed or did not keep the failsafe: put the snapshot back, disarm the revert, forget the deadline.
+ * `lastApply` stays as it was: this apply never recorded one.
+ */
+async function undoApply(engine: Engine, io: Io, store: Store, wasScheduled: boolean, why: string): Promise<ApplyResult> {
+  let restoreFailure = "";
+  try {
+    await engine.restore(io, paths().script);
+  } catch (error) {
+    restoreFailure = `; a restauração também falhou: ${errorMessage(error)}`;
+  }
+  if (wasScheduled) await cancel(io.exec, io.fs);
+  clearPending(store);
+  return { ok: false, error: `${why}; regras anteriores restauradas${restoreFailure}` };
+}
+
+interface Applied {
+  engine: Engine;
+  /** The lists that were loaded. */
+  lists: FwState;
+  failsafe?: string;
+  rules: number;
+  scheduled?: ScheduledBy;
+  now: number;
+  env?: Env;
+}
+
+function recordApply(store: Store, applied: Applied): void {
+  const record: LastApply = {
+    at: new Date(applied.now).toISOString(),
+    by: actor(applied.env ?? process.env),
+    engine: applied.engine.id,
+    key: listsFingerprint(applied.lists),
+    rules: applied.rules,
+    failsafe: applied.failsafe,
+    rollback: applied.scheduled !== undefined,
+  };
+  store.set(STORE_KEY.lastApply, record);
+}

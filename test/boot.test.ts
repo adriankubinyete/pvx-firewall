@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { BOOT_ARGS, DEFAULT_BIN, UNIT_NAME, UNIT_PATH, unitText } from "../src/boot.ts";
 import { ENGINES } from "../src/engines/index.ts";
 import factory from "../src/index.tsx";
-import { fakeExec, fakeFs, io, line } from "./fake.ts";
+import { fakeExec, fakeFs, fakeSdk, io, line } from "./fake.ts";
 
 test("unit content", () => {
   expect(unitText("/usr/local/bin/pvx", "nftables")).toBe(`[Unit]
@@ -23,7 +23,7 @@ WantedBy=multi-user.target
 
 // Regression: the Python unit ran `pvx firewall sync`, a command that did not exist, so the boot service always failed.
 test("ExecStart names a command and flags that the module really has", () => {
-  const def = (factory as (sdk: unknown) => ReturnType<typeof factory>)({ ui: {}, fs: {}, log: {}, version: 1 });
+  const def = factory(fakeSdk());
   const [module, ...rest] = BOOT_ARGS;
   expect(module).toBe("firewall");
   const key = Object.keys(def.commands ?? {}).filter((k) => rest.join(" ").startsWith(k)).sort((a, b) => b.length - a.length)[0];
@@ -38,7 +38,7 @@ test("ExecStart names a command and flags that the module really has", () => {
 
 test("the manifest declares every command the module registers", async () => {
   const manifest = JSON.parse(await Bun.file(`${import.meta.dir}/../pvx-module.json`).text());
-  const def = (factory as (sdk: unknown) => ReturnType<typeof factory>)({ ui: {}, fs: {}, log: {}, version: 1 });
+  const def = factory(fakeSdk());
   expect(Object.keys(def.commands!).sort()).toEqual([...manifest.contributes.commands].sort());
   expect(Object.keys(def.pages!)).toEqual(manifest.contributes.pages);
   expect(Object.keys(def.widgets!).sort()).toEqual([...manifest.contributes.widgets].sort());

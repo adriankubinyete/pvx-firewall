@@ -1,4 +1,4 @@
-import type { ExecResult, ModuleFs } from "@pvx/sdk";
+import type { ExecResult, ModuleFs, ProofKit, Sdk } from "@pvx/sdk";
 import type { Desired, ExecFn, Io } from "../src/engines/types.ts";
 
 export interface Call {
@@ -51,3 +51,22 @@ export const sample: Desired = {
   portDeny: ["80/tcp", "20-23"],
   failsafe: "203.0.113.7",
 };
+
+/** `sdk.proof` as the host builds it (the tests do not load the host's own copy). */
+export const fakeProof: ProofKit = {
+  ok: (text, extra) => ({ level: "ok", text, ...extra }),
+  warn: (text, extra) => ({ level: "warn", text, ...extra }),
+  error: (text, extra) => ({ level: "error", text, ...extra }),
+  async firstProblem(...steps) {
+    for (const step of steps) {
+      const proof = await step();
+      if (proof && proof.level !== "ok") return proof;
+    }
+    return undefined;
+  },
+};
+
+const quietLog = { debug() {}, info() {}, warn() {}, error() {} };
+
+/** The `sdk` a factory receives, for tests that build the module without the host. `ui` is empty: nothing here renders a page. */
+export const fakeSdk = (fs: ModuleFs = fakeFs()): Sdk => ({ version: 1, ui: {} as Sdk["ui"], fs, log: quietLog, proof: fakeProof });

@@ -1,32 +1,53 @@
-// Fake system programs for the story tests. PATH is replaced by a directory holding ONLY these scripts, so the real
+// Fake system programs for the story and page tests. PATH is replaced by a directory holding ONLY these scripts, so the real
 // firewall-cmd, nft, iptables or systemctl of the machine running the tests can never be reached.
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+// Every script logs its call to `$PVX_STUB_DIR/calls` first (`calls()` reads it), then answers like the program would.
+import { afterEach, beforeEach } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const SCRIPT = `#!/bin/sh
-cmd=\${0##*/}
-echo "$cmd $*" >> "$PVX_STUB_DIR/calls"
-case "$cmd $1" in
-  "nft --version") echo "nftables v1.0.9" ;;
-  "nft -f")
+const LOG_THE_CALL = `echo "\${0##*/} $*" >> "$PVX_STUB_DIR/calls"`;
+
+/** A script that logs the call, runs `body`, and exits 0 unless the body exits first. */
+const program = (body: string) => `#!/bin/sh\n${LOG_THE_CALL}\n${body}\nexit 0\n`;
+
+/** The programs that answer something. Any other name in `installStubs` is a no-op that exits 0 (`who`, `systemd-run`). */
+const STUB_BODIES: Record<string, string> = {
+  // nft: a table that remembers what was loaded into it (`loaded`).
+  nft: `case "$1" in
+  # The engine probe.
+  --version) echo "nftables v1.0.9" ;;
+  # \`nft -f -\`: the transaction comes on stdin. Keep it as the loaded rules.
+  -f)
     : > "$PVX_STUB_DIR/loaded"
-    while IFS= read -r l; do printf '%s\\n' "$l" >> "$PVX_STUB_DIR/loaded"; done ;;
-  "nft list")
+    while IFS= read -r line; do printf '%s\\n' "$line" >> "$PVX_STUB_DIR/loaded"; done ;;
+  # \`nft list table ip pvx\`: fails while nothing is loaded; then prints the loaded rules (indented four spaces), without the chain's \`type\` line.
+  list)
     [ -s "$PVX_STUB_DIR/loaded" ] || exit 1
     echo "table ip pvx {"; echo "	chain input {"
-    while IFS= read -r l; do case "$l" in "    "*) case "$l" in *"type filter"*) ;; *) echo "\${l#    }" ;; esac ;; esac; done < "$PVX_STUB_DIR/loaded"
+    while IFS= read -r line; do
+      case "$line" in "    "*) case "$line" in *"type filter"*) ;; *) echo "\${line#    }" ;; esac ;; esac
+    done < "$PVX_STUB_DIR/loaded"
     echo "	}"; echo "}" ;;
-  "systemctl is-active") echo inactive; exit 3 ;;
-  "systemctl is-enabled") echo disabled; exit 1 ;;
-  "asterisk -rx") [ -f "$PVX_STUB_DIR/asterisk.$2" ] && while IFS= read -r l; do printf '%s\\n' "$l"; done < "$PVX_STUB_DIR/asterisk.$2" ;;
-esac
-exit 0
-`;
+esac`,
+
+  // systemctl: firewalld is not running and the boot unit is not enabled.
+  systemctl: `case "$1" in
+  is-active) echo inactive; exit 3 ;;
+  is-enabled) echo disabled; exit 1 ;;
+esac`,
+
+  // asterisk -rx "<query>": prints the file \`asterisk.<query>\` of the stub directory, if the test wrote one.
+  asterisk: `if [ "$1" = "-rx" ] && [ -f "$PVX_STUB_DIR/asterisk.$2" ]; then
+  while IFS= read -r line; do printf '%s\\n' "$line"; done < "$PVX_STUB_DIR/asterisk.$2"
+fi`,
+};
 
 export interface Stubs {
   dir: string;
+  /** Every call, as `program arg arg`, in order. */
   calls(): string[];
+  /** What the last `nft -f -` loaded. */
   loaded(): string;
   restore(): void;
 }
@@ -36,23 +57,38 @@ export function installStubs(programs: string[]): Stubs {
   const dir = mkdtempSync(join(tmpdir(), "pvx-stubs-"));
   const bin = join(dir, "bin");
   mkdirSync(bin);
-  for (const p of programs) {
-    writeFileSync(join(bin, p), SCRIPT);
-    chmodSync(join(bin, p), 0o755);
+  for (const name of programs) {
+    writeFileSync(join(bin, name), program(STUB_BODIES[name] ?? ""));
+    chmodSync(join(bin, name), 0o755);
   }
-  const old = { PATH: process.env.PATH, PVX_STUB_DIR: process.env.PVX_STUB_DIR };
+  const original = { PATH: process.env.PATH, PVX_STUB_DIR: process.env.PVX_STUB_DIR };
   process.env.PATH = bin;
   process.env.PVX_STUB_DIR = dir;
-  const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
+  const read = (file: string) => (existsSync(join(dir, file)) ? readFileSync(join(dir, file), "utf8") : "");
   return {
     dir,
     calls: () => read("calls").split("\n").filter(Boolean),
     loaded: () => read("loaded"),
     restore() {
-      process.env.PATH = old.PATH;
-      if (old.PVX_STUB_DIR === undefined) delete process.env.PVX_STUB_DIR;
-      else process.env.PVX_STUB_DIR = old.PVX_STUB_DIR;
+      process.env.PATH = original.PATH;
+      if (original.PVX_STUB_DIR === undefined) delete process.env.PVX_STUB_DIR;
+      else process.env.PVX_STUB_DIR = original.PVX_STUB_DIR;
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+/** The SSH client the story and page tests pretend to connect from. */
+export const SSH_CLIENT_IP = "203.0.113.7";
+
+/** Every test of the file runs inside an SSH session from `clientIp`; `SSH_CLIENT` is put back afterwards. */
+export function withSshSession(clientIp = SSH_CLIENT_IP): void {
+  const original = process.env.SSH_CLIENT;
+  beforeEach(() => {
+    process.env.SSH_CLIENT = `${clientIp} 5555 22`;
+  });
+  afterEach(() => {
+    if (original === undefined) delete process.env.SSH_CLIENT;
+    else process.env.SSH_CLIENT = original;
+  });
 }

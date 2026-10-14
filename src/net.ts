@@ -1,12 +1,25 @@
 // IPv4, CIDR and port helpers. Pure: no I/O.
 
-export const ipToInt = (s: string): number | undefined => {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
-  if (!m) return undefined;
-  const o = m.slice(1).map(Number);
-  if (o.some((n) => n > 255)) return undefined;
-  return ((o[0]! << 24) | (o[1]! << 16) | (o[2]! << 8) | o[3]!) >>> 0;
+const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+const MAX_OCTET = 255;
+const MAX_PREFIX_BITS = 32;
+
+// JavaScript bit operators work on SIGNED 32-bit integers; every `>>> 0` below turns the result back into an unsigned
+// address (0 to 4294967295), the form the rest of this file compares and prints.
+
+export const ipToInt = (ip: string): number | undefined => {
+  const match = IPV4.exec(ip);
+  if (!match) return undefined;
+  const octets = match.slice(1).map(Number);
+  if (octets.some((octet) => octet > MAX_OCTET)) return undefined;
+  return ((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0;
 };
+
+export const intToIp = (address: number): string =>
+  [address >>> 24, (address >>> 16) & MAX_OCTET, (address >>> 8) & MAX_OCTET, address & MAX_OCTET].join(".");
+
+/** The netmask of a prefix length: `maskOf(24)` is `255.255.255.0` as a number. `/0` is the empty mask (a shift by 32 would wrap). */
+const maskOf = (bits: number): number => (bits === 0 ? 0 : (~0 << (MAX_PREFIX_BITS - bits)) >>> 0);
 
 export interface Cidr {
   addr: number;
@@ -14,86 +27,105 @@ export interface Cidr {
 }
 
 /** `1.2.3.4` or `1.2.3.0/24`. Undefined when invalid or when host bits are set (`1.2.3.4/24`). */
-export const parseCidr = (s: string): Cidr | undefined => {
-  const [ip, len, ...rest] = s.split("/");
-  if (rest.length || ip === undefined) return undefined;
+export const parseCidr = (text: string): Cidr | undefined => {
+  const [ip, length, ...extra] = text.split("/");
+  if (extra.length || ip === undefined) return undefined;
   const addr = ipToInt(ip);
   if (addr === undefined) return undefined;
-  if (len === undefined) return { addr, bits: 32 };
-  if (!/^\d{1,2}$/.test(len) || Number(len) > 32) return undefined;
-  const bits = Number(len);
-  const mask = bits === 0 ? 0 : (~0 << (32 - bits)) >>> 0;
-  return (addr & mask) >>> 0 === addr ? { addr, bits } : undefined;
+  if (length === undefined) return { addr, bits: MAX_PREFIX_BITS };
+  if (!/^\d{1,2}$/.test(length) || Number(length) > MAX_PREFIX_BITS) return undefined;
+  const bits = Number(length);
+  const hostBitsAreClear = (addr & maskOf(bits)) >>> 0 === addr;
+  return hostBitsAreClear ? { addr, bits } : undefined;
 };
 
 /** Canonical text: `/32` dropped. */
-export const cidrText = (c: Cidr): string => {
-  const ip = [c.addr >>> 24, (c.addr >>> 16) & 255, (c.addr >>> 8) & 255, c.addr & 255].join(".");
-  return c.bits === 32 ? ip : `${ip}/${c.bits}`;
+export const cidrText = (cidr: Cidr): string => {
+  const ip = intToIp(cidr.addr);
+  return cidr.bits === MAX_PREFIX_BITS ? ip : `${ip}/${cidr.bits}`;
 };
 
-export const normCidr = (s: string): string | undefined => {
-  const c = parseCidr(s.trim());
-  return c && cidrText(c);
+export const normCidr = (text: string): string | undefined => {
+  const cidr = parseCidr(text.trim());
+  return cidr && cidrText(cidr);
 };
 
 /** Does `outer` contain all of `inner`? */
 export const contains = (outer: Cidr, inner: Cidr): boolean => {
   if (outer.bits > inner.bits) return false;
-  const mask = outer.bits === 0 ? 0 : (~0 << (32 - outer.bits)) >>> 0;
-  return ((inner.addr & mask) >>> 0) === outer.addr;
+  return ((inner.addr & maskOf(outer.bits)) >>> 0) === outer.addr;
 };
 
-export const coveredBy = (value: string, nets: string[]): boolean => {
-  const c = parseCidr(value);
-  return !!c && nets.some((n) => {
-    const o = parseCidr(n);
-    return !!o && contains(o, c);
+/** Is `value` (an IP or CIDR) inside any of the `networks`? Invalid text is never covered. */
+export const coveredBy = (value: string, networks: string[]): boolean => {
+  const inner = parseCidr(value);
+  if (!inner) return false;
+  return networks.some((network) => {
+    const outer = parseCidr(network);
+    return outer !== undefined && contains(outer, inner);
   });
 };
 
 // ---- ports ----
 
+const MIN_PORT = 1;
+const MAX_PORT = 65535;
+/** `5060`, `10000-20000`, `5060/udp`, `10000-20000/tcp`. */
+const PORT_SPEC = /^(\d{1,5})(?:-(\d{1,5}))?(?:\/(tcp|udp))?$/;
+
+export type Protocol = "tcp" | "udp";
+
 export interface PortSpec {
   lo: number;
   hi: number;
   /** Undefined = tcp and udp. */
-  proto?: "tcp" | "udp";
+  proto?: Protocol;
+}
+
+/** One protocol of a port spec: what a rule matches (`range` is `5060` or `10000-20000`). */
+export interface PortMatch {
+  proto: Protocol;
+  range: string;
 }
 
 /** `5060/udp`, `10000-20000/tcp`, `80` (no protocol = tcp and udp). */
-export const parsePort = (s: string): PortSpec | undefined => {
-  const m = /^(\d{1,5})(?:-(\d{1,5}))?(?:\/(tcp|udp))?$/.exec(s.trim().toLowerCase());
-  if (!m) return undefined;
-  const lo = Number(m[1]);
-  const hi = m[2] === undefined ? lo : Number(m[2]);
-  if (lo < 1 || hi > 65535 || hi < lo) return undefined;
-  return { lo, hi, proto: m[3] as PortSpec["proto"] };
+export const parsePort = (text: string): PortSpec | undefined => {
+  const match = PORT_SPEC.exec(text.trim().toLowerCase());
+  if (!match) return undefined;
+  const lo = Number(match[1]);
+  const hi = match[2] === undefined ? lo : Number(match[2]);
+  if (lo < MIN_PORT || hi > MAX_PORT || hi < lo) return undefined;
+  return { lo, hi, proto: match[3] as Protocol | undefined };
 };
 
-export const portText = (p: PortSpec): string => `${p.lo === p.hi ? p.lo : `${p.lo}-${p.hi}`}${p.proto ? `/${p.proto}` : ""}`;
+const rangeText = (spec: PortSpec): string => (spec.lo === spec.hi ? String(spec.lo) : `${spec.lo}-${spec.hi}`);
 
-export const normPort = (s: string): string | undefined => {
-  const p = parsePort(s);
-  return p && portText(p);
+export const portText = (spec: PortSpec): string => `${rangeText(spec)}${spec.proto ? `/${spec.proto}` : ""}`;
+
+export const normPort = (text: string): string | undefined => {
+  const spec = parsePort(text);
+  return spec && portText(spec);
 };
 
-/** One entry per protocol, ranges as `lo-hi`. */
-export const expandPort = (spec: string): { proto: "tcp" | "udp"; range: string }[] => {
-  const p = parsePort(spec);
-  if (!p) return [];
-  const range = p.lo === p.hi ? String(p.lo) : `${p.lo}-${p.hi}`;
-  return (p.proto ? [p.proto] : (["tcp", "udp"] as const)).map((proto) => ({ proto, range }));
+/** One match per protocol, ranges as `lo-hi`; invalid text gives none. */
+export const expandPort = (text: string): PortMatch[] => {
+  const spec = parsePort(text);
+  if (!spec) return [];
+  const protocols: Protocol[] = spec.proto ? [spec.proto] : ["tcp", "udp"];
+  return protocols.map((proto) => ({ proto, range: rangeText(spec) }));
 };
 
 // ---- the SSH session ----
 
+/** The `(ip)` that `who -m` prints after the terminal and the login time. */
+const WHO_CLIENT = /\((\d{1,3}(?:\.\d{1,3}){3})\)/;
+
 /** First IPv4 of `SSH_CLIENT` / `SSH_CONNECTION`, else the `(ip)` of `who -m`. */
-export const sessionIp = (env: Record<string, string | undefined>, whoOut = ""): string | undefined => {
-  for (const v of [env.SSH_CLIENT, env.SSH_CONNECTION]) {
-    const ip = v?.trim().split(/\s+/)[0];
-    if (ip && ipToInt(ip) !== undefined) return ip;
+export const sessionIp = (env: Record<string, string | undefined>, whoOutput = ""): string | undefined => {
+  for (const variable of [env.SSH_CLIENT, env.SSH_CONNECTION]) {
+    const firstWord = variable?.trim().split(/\s+/)[0];
+    if (firstWord && ipToInt(firstWord) !== undefined) return firstWord;
   }
-  const m = /\((\d{1,3}(?:\.\d{1,3}){3})\)/.exec(whoOut);
-  return m && ipToInt(m[1]!) !== undefined ? m[1] : undefined;
+  const fromWho = WHO_CLIENT.exec(whoOutput)?.[1];
+  return fromWho !== undefined && ipToInt(fromWho) !== undefined ? fromWho : undefined;
 };

@@ -1,6 +1,17 @@
-// The firewall lists, kept as JSON in the module store. Pure helpers over a plain object.
-import { contains, coveredBy, normCidr, normPort, parseCidr } from "./net.ts";
+// What the module keeps in its store (`state.json`): the lists and the records of the last apply. Pure helpers over plain objects.
+import type { Store } from "@pvx/sdk";
+import { coveredBy, normCidr, normPort } from "./net.ts";
 import type { Desired } from "./engines/types.ts";
+
+/** The store keys this module writes. Each one has a type below; nothing else is persisted. */
+export const STORE_KEY = {
+  lists: "state",
+  engine: "engine",
+  zone: "zone",
+  lastApply: "lastApply",
+  pending: "pending",
+  asterisk: "asterisk",
+} as const;
 
 export type Source = "base" | "asterisk" | "manual";
 export interface Entry {
@@ -18,6 +29,31 @@ export interface FwState {
   portDeny: Entry[];
 }
 export type ListName = keyof FwState;
+
+/** `lastApply`: what the last successful apply recorded. `key` is `listsFingerprint` of the lists it loaded. */
+export interface LastApply {
+  at: string;
+  by: string;
+  engine: string;
+  key: string;
+  rules: number;
+  failsafe?: string;
+  /** Whether a revert job was scheduled with it. */
+  rollback: boolean;
+}
+
+/** `pending`: an apply the technician has not confirmed yet. Epoch milliseconds. */
+export interface PendingRevert {
+  at: number;
+  deadline: number;
+}
+
+/** `asterisk`: the outcome of the last `ip trust-asterisk` review. */
+export interface AsteriskReview {
+  at: number;
+  /** Candidates the technician has not accepted. */
+  pending: { ip: string; peer: string }[];
+}
 
 /** The single source of the Phonevox base IPs. */
 export const BASE_IPS: readonly (readonly [string, string])[] = [
@@ -62,72 +98,98 @@ const PORT_DENY: [string, string][] = [
   ["10051/tcp", "Zabbix server"],
 ];
 
-const who = (env: Record<string, string | undefined>) => env.SUDO_USER || env.LOGNAME || "desconhecido";
-export const actor = (env: Record<string, string | undefined> = process.env) => who(env);
+export const UNKNOWN_ACTOR = "desconhecido";
+
+/** Who is acting: the user behind `sudo`, else the login. */
+export const actor = (env: Record<string, string | undefined> = process.env): string => env.SUDO_USER || env.LOGNAME || UNKNOWN_ACTOR;
 
 export const seed = (at = new Date().toISOString()): FwState => {
-  const mk = ([value, comment]: readonly [string, string]): Entry => ({ value, comment, source: "base", addedBy: "firewall", at });
-  return { ipAccept: BASE_IPS.map(mk), ipDeny: [], portAccept: PORT_ACCEPT.map(mk), portDeny: PORT_DENY.map(mk) };
+  const baseEntry = ([value, comment]: readonly [string, string]): Entry => ({ value, comment, source: "base", addedBy: "firewall", at });
+  return { ipAccept: BASE_IPS.map(baseEntry), ipDeny: [], portAccept: PORT_ACCEPT.map(baseEntry), portDeny: PORT_DENY.map(baseEntry) };
 };
 
 /**
  * Reads never write. A missing state is the seed, and a writer saves what it loaded, so an add on a fresh central keeps the
  * base IPs (the Python module once lost them this way and a technician lost the SSH session).
  */
-export const load = (s: { get<T>(k: string): T | undefined }): FwState => s.get<FwState>("state") ?? seed();
+export const load = (store: Pick<Store, "get">): FwState => store.get<FwState>(STORE_KEY.lists) ?? seed();
 
-export const isIp = (l: ListName) => l === "ipAccept" || l === "ipDeny";
-export const norm = (l: ListName, v: string) => (isIp(l) ? normCidr(v) : normPort(v));
+export const isIp = (list: ListName) => list === "ipAccept" || list === "ipDeny";
+export const norm = (list: ListName, value: string) => (isIp(list) ? normCidr(value) : normPort(value));
+
+/** The list a value would contradict: accepting a value that is denied (or the reverse). The deny wins when both hold it. */
+export const OPPOSITE_LIST: Record<ListName, ListName> = {
+  ipAccept: "ipDeny",
+  ipDeny: "ipAccept",
+  portAccept: "portDeny",
+  portDeny: "portAccept",
+};
+
+/** The first piece of comma-separated `text` that is not a valid value of `list` (same split as `ctx.list`). */
+export function firstInvalidValue(list: ListName, text: string): string | undefined {
+  const pieces = text.split(",").map((piece) => piece.trim()).filter(Boolean);
+  return pieces.find((piece) => norm(list, piece) === undefined);
+}
+
+export type AddResult = "added" | "updated" | "unchanged";
 
 /** Adds, or updates the comment of an existing entry. */
-export function addEntry(st: FwState, list: ListName, value: string, comment: string, source: Source, by: string, at = new Date().toISOString()): "added" | "updated" | "unchanged" {
-  const cur = st[list].find((e) => e.value === value);
-  if (!cur) {
-    st[list].push({ value, comment, source, addedBy: by, at });
+export function addEntry(state: FwState, list: ListName, value: string, comment: string, source: Source, addedBy: string, at = new Date().toISOString()): AddResult {
+  const existing = state[list].find((entry) => entry.value === value);
+  if (!existing) {
+    state[list].push({ value, comment, source, addedBy, at });
     return "added";
   }
-  if (comment && comment !== cur.comment) {
-    cur.comment = comment;
+  if (comment && comment !== existing.comment) {
+    existing.comment = comment;
     return "updated";
   }
   return "unchanged";
 }
 
-/** Removes `value` from the given lists. */
-export function removeEntry(st: FwState, lists: ListName[], value: string): ListName[] {
+/** Removes `value` from the given lists; returns the lists that had it. */
+export function removeEntry(state: FwState, lists: ListName[], value: string): ListName[] {
   const hit: ListName[] = [];
-  for (const l of lists) {
-    const n = st[l].length;
-    st[l] = st[l].filter((e) => e.value !== value);
-    if (st[l].length !== n) hit.push(l);
+  for (const list of lists) {
+    const before = state[list].length;
+    state[list] = state[list].filter((entry) => entry.value !== value);
+    if (state[list].length !== before) hit.push(list);
   }
   return hit;
 }
 
 /** Base entries not covered by an accepted network. */
-export const missingBase = (st: FwState): (readonly [string, string])[] => {
-  const nets = st.ipAccept.map((e) => e.value);
-  return BASE_IPS.filter(([v]) => !coveredBy(v, nets));
+export const missingBase = (state: FwState): (readonly [string, string])[] => {
+  const accepted = state.ipAccept.map((entry) => entry.value);
+  return BASE_IPS.filter(([value]) => !coveredBy(value, accepted));
 };
 
-/** Does any deny entry cover `ip`? */
-export const deniedBy = (st: FwState, ip: string): string | undefined => {
-  const c = parseCidr(ip);
-  return c ? st.ipDeny.find((e) => { const o = parseCidr(e.value); return !!o && contains(o, c); })?.value : undefined;
-};
-
-export const desiredOf = (st: FwState, failsafe?: string): Desired => ({
-  ipAccept: st.ipAccept.map((e) => e.value),
-  ipDeny: st.ipDeny.map((e) => e.value),
-  portAccept: st.portAccept.map((e) => e.value),
-  portDeny: st.portDeny.map((e) => e.value),
+export const desiredOf = (state: FwState, failsafe?: string): Desired => ({
+  ipAccept: state.ipAccept.map((entry) => entry.value),
+  ipDeny: state.ipDeny.map((entry) => entry.value),
+  portAccept: state.portAccept.map((entry) => entry.value),
+  portDeny: state.portDeny.map((entry) => entry.value),
   failsafe,
 });
 
-/** Small stable fingerprint of the lists: "was what is applied what is listed now?". */
-export const keyOf = (st: FwState): string => {
-  const s = JSON.stringify([st.ipAccept, st.ipDeny, st.portAccept, st.portDeny].map((l) => l.map((e) => e.value).sort()));
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
-  return h.toString(16);
+/**
+ * A small stable fingerprint of the lists' values ("djb2" over the sorted values): "is what was applied what is listed now?".
+ * It is saved in `lastApply.key` on every central. Do NOT change the algorithm: a new hash would make every existing
+ * install report "as listas mudaram" until the next apply.
+ */
+export const listsFingerprint = (state: FwState): string => {
+  const sortedValues = [state.ipAccept, state.ipDeny, state.portAccept, state.portDeny].map((entries) => entries.map((entry) => entry.value).sort());
+  const text = JSON.stringify(sortedValues);
+  let hash = 5381;
+  for (let index = 0; index < text.length; index++) hash = ((hash * 33) ^ text.charCodeAt(index)) >>> 0;
+  return hash.toString(16);
 };
+
+/** Forgets the unconfirmed apply (its deadline), and keeps the record of what was last applied. */
+export const clearPending = (store: Store): void => store.delete(STORE_KEY.pending);
+
+/** Forgets the unconfirmed apply AND the record of the last apply: the rules it described are gone (a revert ran). */
+export function clearApplyState(store: Store): void {
+  clearPending(store);
+  store.delete(STORE_KEY.lastApply);
+}

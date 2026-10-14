@@ -1,7 +1,7 @@
 // start-on-boot: a oneshot unit that reapplies the lists. Its ExecStart MUST be a real command of this module
 // (the Python unit called `firewall sync`, which never existed; test/boot.test.ts ties the two).
-import { fail, ok, run } from "./exec.ts";
-import type { EngineId, Io } from "./engines/types.ts";
+import { run, runOrFail } from "./exec.ts";
+import type { BootStatus, EngineId, Io } from "./engines/types.ts";
 
 export const UNIT_NAME = "pvx-firewall.service";
 export const UNIT_PATH = `/etc/systemd/system/${UNIT_NAME}`;
@@ -31,8 +31,7 @@ export const makeBoot = (engine: EngineId) => ({
   async bootEnable(io: Io, pvxBin: string) {
     await io.fs.write(UNIT_PATH, unitText(pvxBin, engine));
     for (const args of [["daemon-reload"], ["enable", UNIT_NAME]]) {
-      const r = await run(io.exec, "systemctl", args);
-      if (!ok(r)) throw fail(`systemctl ${args.join(" ")}`, r);
+      await runOrFail(io.exec, "systemctl", args, `systemctl ${args.join(" ")}`);
     }
   },
   async bootDisable(io: Io) {
@@ -40,8 +39,8 @@ export const makeBoot = (engine: EngineId) => ({
     await io.fs.remove(UNIT_PATH);
     await run(io.exec, "systemctl", ["daemon-reload"]);
   },
-  async bootStatus(io: Io): Promise<"enabled" | "disabled"> {
-    const r = await run(io.exec, "systemctl", ["is-enabled", UNIT_NAME]);
-    return r.stdout.trim() === "enabled" ? "enabled" : "disabled";
+  async bootStatus(io: Pick<Io, "exec">): Promise<BootStatus> {
+    const result = await run(io.exec, "systemctl", ["is-enabled", UNIT_NAME]);
+    return result.stdout.trim() === "enabled" ? "enabled" : "disabled";
   },
 });

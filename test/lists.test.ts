@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { contains, normCidr, normPort, parseCidr, parsePort, sessionIp } from "../src/net.ts";
-import { BASE_IPS, addEntry, deniedBy, keyOf, load, missingBase, removeEntry, seed } from "../src/state.ts";
+import { BASE_IPS, addEntry, listsFingerprint, load, missingBase, removeEntry, seed } from "../src/state.ts";
 import { memStore } from "./fake.ts";
 
 test("cidr validation and normalisation", () => {
@@ -62,12 +62,11 @@ test("addEntry: add, comment update, unchanged", () => {
   expect(st.ipAccept.filter((e) => e.value === "203.0.113.9")).toHaveLength(1);
 });
 
-test("deniedBy and keyOf", () => {
-  const st = seed();
-  addEntry(st, "ipDeny", "198.51.100.0/24", "", "manual", "t");
-  expect(deniedBy(st, "198.51.100.7")).toBe("198.51.100.0/24");
-  expect(deniedBy(st, "203.0.113.7")).toBeUndefined();
-  const k = keyOf(st);
-  addEntry(st, "ipAccept", "203.0.113.9", "", "manual", "t");
-  expect(keyOf(st)).not.toBe(k);
+test("the lists fingerprint changes with the values and is stable (it is saved in lastApply.key on every central)", () => {
+  const state = seed();
+  const before = listsFingerprint(state);
+  addEntry(state, "ipAccept", "203.0.113.9", "", "manual", "t");
+  expect(listsFingerprint(state)).not.toBe(before);
+  // The value of the seed as the first version computed it: a new algorithm would make every existing install say "as listas mudaram".
+  expect(before).toBe("2aa2a4b2");
 });

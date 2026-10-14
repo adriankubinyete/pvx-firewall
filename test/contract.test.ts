@@ -1,17 +1,17 @@
 import { expect, test } from "bun:test";
-import type { ModuleDef, Sdk, SlotData } from "@pvx/sdk";
+import type { ModuleDef, ReadCtx, SlotData } from "@pvx/sdk";
 import factory from "../src/index.tsx";
 import { paths, stateDir } from "../src/rollback.ts";
-import { removeEntry, seed } from "../src/state.ts";
+import { desiredOf, listsFingerprint, removeEntry, seed } from "../src/state.ts";
 import { nftables } from "../src/engines/nft.ts";
-import { desiredOf } from "../src/state.ts";
-import { fakeExec, fakeFs, memStore, type Call } from "./fake.ts";
+import { fakeExec, fakeFs, fakeSdk, memStore, type Call } from "./fake.ts";
 
-const build = (fs = fakeFs()) => ({ fs, def: (factory as (s: Sdk) => ModuleDef)({ version: 1, ui: {} as Sdk["ui"], fs, log: { debug() {}, info() {}, warn() {}, error() {} } }) });
+const build = (fs = fakeFs()) => ({ fs, def: factory(fakeSdk(fs)) });
 const cap = (def: ModuleDef, id: string) => def.capabilities!.find((c) => c.id === id)!;
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 // The read-only context the host hands to prove, queries and widgets: `this` for the queries.
-const ctx = (store: ReturnType<typeof memStore>, fs = fakeFs(), exec = fakeExec().exec) => ({ store, log: quiet, query: () => undefined, exec, fs }) as never;
+const noJobs: ReadCtx["jobs"] = { status: async () => ({ state: "none" }), list: async () => [], log: async () => [] };
+const ctx = (store: ReturnType<typeof memStore>, fs = fakeFs(), exec = fakeExec().exec): ReadCtx => ({ store, log: quiet, query: () => undefined, exec, fs, jobs: noJobs });
 /** An exec for a host with nftables whose live rules are `rules` (none: the table is gone). */
 const nftHost = (rules?: string[]) =>
   fakeExec((c: Call) => (c.cmd === "nft" && c.args[0] === "list" ? (rules ? { stdout: `table ip pvx {\n\tchain input {\n\t\ttype filter hook input priority -10; policy accept;\n${rules.map((r) => `\t\t${r}\n`).join("")}\t}\n}\n` } : { code: 1 }) : { stdout: "nftables v1" })).exec;
@@ -48,8 +48,7 @@ test("active: never applied, applied but lists changed, pending, reverted, no bo
   const prove = (store: ReturnType<typeof memStore>) => cap(def, "firewall.active").prove(ctx(store, fs));
   expect(await prove(memStore())).toMatchObject({ level: "warn", fix: "firewall apply" });
 
-  const { keyOf } = await import("../src/state.ts");
-  const key = keyOf(seed());
+  const key = listsFingerprint(seed());
   const last = { at: "T", engine: "nftables", key, rules: 30 };
   expect(await prove(memStore({ lastApply: { ...last, key: "other" } }))).toMatchObject({ level: "warn", text: expect.stringContaining("listas mudaram") });
   const live = nftHost(nftables.render(desiredOf(seed())));
@@ -90,17 +89,16 @@ test("queries firewall.missingBaseIps and firewall.status read the module state"
 test("widgets: chip says engine and rule count with a level; attention lists the missing base IPs with the fix", async () => {
   const { def, fs } = build();
   const read = () => ctx(memStore(JSON.parse(fs.files.get(stateFile()) ?? "{}")), fs);
-  const chip = () => def.widgets!.chip!.data(read()) as Promise<{ label: string; level: string; detail?: string }[]>;
-  const att = () => def.widgets!.atencao!.data(read()) as Promise<{ level: string; title: string; fix?: string }[]>;
+  const chip = () => def.widgets!.chip!.data(read());
+  const att = () => def.widgets!.atencao!.data(read());
   expect(await chip()).toEqual([{ label: "firewall · auto · não aplicado", level: "warn" }]);
-  const { keyOf } = await import("../src/state.ts");
   const st = seed();
-  fs.files.set(stateFile(), JSON.stringify({ state: st, lastApply: { at: "T", engine: "nftables", key: keyOf(st), rules: 34 } }));
+  fs.files.set(stateFile(), JSON.stringify({ state: st, lastApply: { at: "T", engine: "nftables", key: listsFingerprint(st), rules: 34 } }));
   expect(await chip()).toEqual([{ label: "firewall · nftables · 34 regras", level: "ok", detail: undefined }]);
   expect(await att()).toEqual([]);
   removeEntry(st, ["ipAccept"], "127.0.0.1");
   fs.files.set(stateFile(), JSON.stringify({ state: st }));
   expect(await att()).toEqual([{ level: "warn", title: "firewall: faltam 1 IP(s) base da Phonevox", fix: "firewall ip trust-phonevox" }]);
-  const slots: SlotData[] = [await chip(), await att()] as never;
+  const slots: SlotData[] = [await chip(), await att()];
   expect(slots).toHaveLength(2);
 });

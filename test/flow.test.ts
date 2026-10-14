@@ -2,7 +2,7 @@ import { beforeEach, expect, test } from "bun:test";
 import { applyFlow, detectSession } from "../src/apply.ts";
 import { nftables, script } from "../src/engines/nft.ts";
 import { ROLLBACK_SECONDS, UNIT, cancel, guard, paths, pendingInfo, schedule } from "../src/rollback.ts";
-import { desiredOf, load } from "../src/state.ts";
+import { clearApplyState, clearPending, desiredOf, load } from "../src/state.ts";
 import { fakeExec, fakeFs, io, line, memStore } from "./fake.ts";
 
 const SSH = { SSH_CLIENT: "203.0.113.7 5555 22" };
@@ -31,7 +31,7 @@ test("detectSession: SSH_CLIENT first, then who -m", async () => {
 
 test("no session IP and no --force: aborts before touching anything", async () => {
   const { exec, calls } = fakeExec();
-  const r = await applyFlow(nftables, io(exec), memStore() as never, { env: {} });
+  const r = await applyFlow(nftables, io(exec), memStore(), { env: {} });
   expect(r.ok).toBe(false);
   expect(calls.map((c) => c.cmd)).toEqual(["who"]); // only the lookup
 });
@@ -39,7 +39,7 @@ test("no session IP and no --force: aborts before touching anything", async () =
 test("failsafe: the SSH client IP is in the loaded rules, first", async () => {
   const { exec, calls } = nftHost();
   const store = memStore();
-  const r = await applyFlow(nftables, io(exec), store as never, { env: SSH });
+  const r = await applyFlow(nftables, io(exec), store, { env: SSH });
   expect(r).toMatchObject({ ok: true, failsafe: "203.0.113.7" });
   const load_ = calls.find((c) => c.cmd === "nft" && c.args[0] === "-f")!;
   expect(load_.stdin).toBe(script(desiredOf(load(store), "203.0.113.7")));
@@ -48,7 +48,7 @@ test("failsafe: the SSH client IP is in the loaded rules, first", async () => {
 
 test("--force without a session applies with no failsafe", async () => {
   const { exec, calls } = nftHost();
-  const r = await applyFlow(nftables, io(exec), memStore() as never, { force: true, noRollback: true, env: {} });
+  const r = await applyFlow(nftables, io(exec), memStore(), { force: true, noRollback: true, env: {} });
   expect(r).toMatchObject({ ok: true, failsafe: undefined });
   expect(calls.find((c) => c.args[0] === "-f")!.stdin).not.toContain("203.0.113.7");
 });
@@ -56,7 +56,7 @@ test("--force without a session applies with no failsafe", async () => {
 test("order: snapshot, schedule the revert, then load", async () => {
   const { exec, calls } = nftHost();
   const fs = fakeFs();
-  await applyFlow(nftables, io(exec, fs), memStore() as never, { env: SSH });
+  await applyFlow(nftables, io(exec, fs), memStore(), { env: SSH });
   const order = calls.map((c) => `${c.cmd}:${c.args[0]}`);
   expect(order.indexOf("nft:list")).toBeLessThan(order.indexOf("systemd-run:--on-active=60"));
   expect(order.indexOf("systemd-run:--on-active=60")).toBeLessThan(order.indexOf("nft:-f"));
@@ -68,7 +68,7 @@ test("rollback scheduling: systemd-run with a guarded restore of the saved snaps
   const { exec, calls } = fakeExec();
   const fs = fakeFs();
   const store = memStore();
-  expect(await schedule(exec, fs, store as never, 1_000_000)).toBe("systemd");
+  expect(await schedule(exec, fs, store, 1_000_000)).toBe("systemd");
   expect(calls.map(line)).toEqual([`systemd-run --on-active=${ROLLBACK_SECONDS} --unit=${UNIT} --collect --description=pvx firewall: automatic revert sh -c ${guard(p())}`]);
   expect(guard(p())).toBe(`[ -f '${p().marker}' ] && { sh '${p().script}'; rm -f '${p().marker}'; }; true`);
   expect(store.data.pending).toEqual({ at: 1_000_000, deadline: 1_060_000 });
@@ -76,7 +76,7 @@ test("rollback scheduling: systemd-run with a guarded restore of the saved snaps
 
 test("rollback fallback: when systemd-run fails, a detached nohup sh sleeps 60 then runs the same guard", async () => {
   const { exec, calls } = fakeExec((c) => (c.cmd === "systemd-run" ? { code: 1 } : undefined));
-  expect(await schedule(exec, fakeFs(), memStore() as never)).toBe("sh");
+  expect(await schedule(exec, fakeFs(), memStore())).toBe("sh");
   const fb = calls[1]!;
   expect(fb.cmd).toBe("sh");
   expect(fb.args[0]).toBe("-c");
@@ -89,7 +89,7 @@ test("confirm: removing the marker disarms both jobs and the timer is stopped", 
   const { exec, calls } = fakeExec();
   const fs = fakeFs();
   const store = memStore();
-  await schedule(exec, fs, store as never, Date.now());
+  await schedule(exec, fs, store, Date.now());
   expect((await pendingInfo(fs, store)).state).toBe("pending");
   await cancel(exec, fs);
   expect(fs.files.has(p().marker)).toBe(false);
@@ -111,7 +111,7 @@ test("a failed load restores the snapshot, cancels the revert and reports", asyn
   const fs = fakeFs();
   const { exec, calls } = fakeExec((c) => (c.cmd === "nft" && c.args[0] === "-f" ? { code: 1, stderr: "syntax error" } : c.cmd === "nft" ? { code: 1 } : undefined));
   const store = memStore();
-  const r = await applyFlow(nftables, io(exec, fs), store as never, { env: SSH });
+  const r = await applyFlow(nftables, io(exec, fs), store, { env: SSH });
   expect(r).toMatchObject({ ok: false });
   expect((r as { error: string }).error).toContain("syntax error");
   expect(calls.some((c) => c.cmd === "sh" && c.args[0] === p().script)).toBe(true);
@@ -122,7 +122,7 @@ test("a failed load restores the snapshot, cancels the revert and reports", asyn
 
 test("a failsafe that did not load is rolled back at once", async () => {
   const { exec, calls } = nftHost({ dropFailsafe: true });
-  const r = await applyFlow(nftables, io(exec), memStore() as never, { env: SSH });
+  const r = await applyFlow(nftables, io(exec), memStore(), { env: SSH });
   expect(r.ok).toBe(false);
   expect((r as { error: string }).error).toContain("203.0.113.7");
   expect(calls.some((c) => c.cmd === "sh" && c.args[0] === p().script)).toBe(true);
@@ -131,18 +131,40 @@ test("a failsafe that did not load is rolled back at once", async () => {
 test("a second apply while one is pending keeps the older snapshot", async () => {
   const fs = fakeFs();
   const store = memStore();
-  await applyFlow(nftables, io(nftHost().exec, fs), store as never, { env: SSH });
+  await applyFlow(nftables, io(nftHost().exec, fs), store, { env: SSH });
   fs.files.set(p().script, "OLDER");
-  await applyFlow(nftables, io(nftHost().exec, fs), store as never, { env: SSH });
+  await applyFlow(nftables, io(nftHost().exec, fs), store, { env: SSH });
   expect(fs.files.get(p().script)).toBe("OLDER");
 });
 
 test("success records the apply and a pending deadline; --no-rollback records none", async () => {
   const s1 = memStore();
-  await applyFlow(nftables, io(nftHost().exec), s1 as never, { env: SSH, now: 5_000 });
+  await applyFlow(nftables, io(nftHost().exec), s1, { env: SSH, now: 5_000 });
   expect(s1.data.pending).toEqual({ at: 5000, deadline: 65_000 });
   expect(s1.data.lastApply).toMatchObject({ engine: "nftables", failsafe: "203.0.113.7", rollback: true, rules: 2 });
   const s2 = memStore();
-  await applyFlow(nftables, io(nftHost().exec), s2 as never, { env: SSH, noRollback: true });
+  await applyFlow(nftables, io(nftHost().exec), s2, { env: SSH, noRollback: true });
   expect(s2.data.pending).toBeUndefined();
+});
+
+// Three callers forget the apply state, and they differ on purpose: only a revert (or a confirm that finds the revert already done)
+// makes `lastApply` describe rules that are gone.
+test("clearPending keeps lastApply; clearApplyState forgets both", () => {
+  const record = { pending: { at: 1, deadline: 2 }, lastApply: { at: "T" } };
+  const kept = memStore(record);
+  clearPending(kept);
+  expect(kept.data).toEqual({ lastApply: { at: "T" } });
+  const forgotten = memStore(record);
+  clearApplyState(forgotten);
+  expect(forgotten.data).toEqual({});
+});
+
+test("when the restore itself fails, the error says so and the revert is still cancelled", async () => {
+  const fs = fakeFs();
+  const { exec, calls } = fakeExec((c) => (c.cmd === "nft" && c.args[0] === "-f" ? { code: 1, stderr: "syntax error" } : c.cmd === "sh" && c.args[0] === p().script ? { code: 1, stderr: "disk full" } : c.cmd === "nft" ? { code: 1 } : undefined));
+  const r = await applyFlow(nftables, io(exec, fs), memStore(), { env: SSH });
+  expect(r).toMatchObject({ ok: false });
+  expect((r as { error: string }).error).toContain("syntax error");
+  expect((r as { error: string }).error).toContain("a restauração também falhou: restore falhou (exit 1): disk full");
+  expect(calls.map(line)).toContain(`systemctl stop ${UNIT}.timer`);
 });

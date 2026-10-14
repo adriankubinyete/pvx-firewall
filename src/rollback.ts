@@ -2,38 +2,67 @@
 // unless `firewall confirm` removed the marker first. It survives pvx exiting and the SSH session dropping:
 // systemd-run owns it, with a detached `sh` as fallback. Both are guarded by the same marker file.
 import type { ModuleFs, Store } from "@pvx/sdk";
-import { ok, run, sq } from "./exec.ts";
+import { ok, run, shellQuote } from "./exec.ts";
 import type { ExecFn } from "./engines/types.ts";
+import { STORE_KEY, type PendingRevert } from "./state.ts";
 
 export const ROLLBACK_SECONDS = 60;
+export const ROLLBACK_MS = ROLLBACK_SECONDS * 1000;
+/** How late the revert may be before `pendingInfo` says "expired": the job did not fire. */
+const EXPIRED_GRACE_MS = 15_000;
 export const UNIT = "pvx-firewall-revert";
 
 export const stateDir = () => `${process.env.PVX_HOME || "/etc/pvx"}/modules/firewall/state`;
-export const paths = (dir = stateDir()) => ({ marker: `${dir}/rollback.pending`, script: `${dir}/snapshots/restore.sh` });
+
+export interface RollbackFiles {
+  /** Exists while a revert is armed; removing it disarms the job. */
+  marker: string;
+  /** The `sh` script `engine.snapshot` wrote. */
+  script: string;
+}
+export const paths = (dir = stateDir()): RollbackFiles => ({ marker: `${dir}/rollback.pending`, script: `${dir}/snapshots/restore.sh` });
 
 /** What the job runs: only if still marked, restore, then unmark. */
-export const guard = (p: { marker: string; script: string }) => `[ -f ${sq(p.marker)} ] && { sh ${sq(p.script)}; rm -f ${sq(p.marker)}; }; true`;
+export const guard = (files: RollbackFiles) =>
+  `[ -f ${shellQuote(files.marker)} ] && { sh ${shellQuote(files.script)}; rm -f ${shellQuote(files.marker)}; }; true`;
 
 export type Pending = { state: "none" } | { state: "pending"; left: number } | { state: "reverted" } | { state: "expired" };
 
 /** Derived from the store (`pending.deadline`) and the marker: nothing here writes. */
-export async function pendingInfo(fs: Pick<ModuleFs, "exists">, store: { get<T>(k: string): T | undefined }, now = Date.now()): Promise<Pending> {
-  const p = store.get<{ deadline: number }>("pending");
-  if (!p) return { state: "none" };
+export async function pendingInfo(fs: Pick<ModuleFs, "exists">, store: Pick<Store, "get">, now = Date.now()): Promise<Pending> {
+  const pending = store.get<PendingRevert>(STORE_KEY.pending);
+  if (!pending) return { state: "none" };
   if (!(await fs.exists(paths().marker))) return { state: "reverted" };
-  return now > p.deadline + 15_000 ? { state: "expired" } : { state: "pending", left: Math.max(0, Math.ceil((p.deadline - now) / 1000)) };
+  if (now > pending.deadline + EXPIRED_GRACE_MS) return { state: "expired" };
+  return { state: "pending", left: Math.max(0, Math.ceil((pending.deadline - now) / 1000)) };
 }
 
+/** How the revert is told in `firewall status`. */
+export function describePending(pending: Pending): string {
+  switch (pending.state) {
+    case "none":
+      return "nenhuma";
+    case "pending":
+      return `pendente, ${pending.left}s`;
+    case "reverted":
+      return "ocorreu (regras anteriores voltaram)";
+    case "expired":
+      return "atrasada (o job não disparou)";
+  }
+}
+
+export type ScheduledBy = "systemd" | "sh";
+
 /** Marks and schedules. Returns how it was scheduled. */
-export async function schedule(exec: ExecFn, fs: ModuleFs, store: Store, now = Date.now()): Promise<"systemd" | "sh"> {
-  const p = paths();
-  await fs.write(p.marker, String(now));
-  store.set("pending", { at: now, deadline: now + ROLLBACK_SECONDS * 1000 });
-  const g = guard(p);
-  const s = await run(exec, "systemd-run", [`--on-active=${ROLLBACK_SECONDS}`, `--unit=${UNIT}`, "--collect", "--description=pvx firewall: automatic revert", "sh", "-c", g]);
-  if (ok(s)) return "systemd";
+export async function schedule(exec: ExecFn, fs: ModuleFs, store: Store, now = Date.now()): Promise<ScheduledBy> {
+  const files = paths();
+  await fs.write(files.marker, String(now));
+  store.set(STORE_KEY.pending, { at: now, deadline: now + ROLLBACK_MS } satisfies PendingRevert);
+  const revertCommand = guard(files);
+  const viaSystemd = await run(exec, "systemd-run", [`--on-active=${ROLLBACK_SECONDS}`, `--unit=${UNIT}`, "--collect", "--description=pvx firewall: automatic revert", "sh", "-c", revertCommand]);
+  if (ok(viaSystemd)) return "systemd";
   // Fallback: a detached shell with every fd redirected, so ctx.exec does not wait for the sleep.
-  await exec("sh", ["-c", `nohup sh -c ${sq(`sleep ${ROLLBACK_SECONDS}; ${g}`)} >/dev/null 2>&1 </dev/null &`]);
+  await exec("sh", ["-c", `nohup sh -c ${shellQuote(`sleep ${ROLLBACK_SECONDS}; ${revertCommand}`)} >/dev/null 2>&1 </dev/null &`]);
   return "sh";
 }
 
