@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { firewalld, rules as fdRules } from "../src/engines/firewalld.ts";
 import { iptables, script as ipScript } from "../src/engines/iptables.ts";
 import { nftables, script as nftScript } from "../src/engines/nft.ts";
-import { pickEngine } from "../src/engines/index.ts";
+import { ENGINES, pickEngine } from "../src/engines/index.ts";
+import { renderRules, type RuleFormat } from "../src/engines/rules.ts";
 import { fakeExec, fakeFs, io, line, sample } from "./fake.ts";
 
 test("nftables: golden transaction", () => {
@@ -180,4 +181,28 @@ test("an explicit engine setting wins over detection", async () => {
   const { exec } = fakeExec((c) => (c.cmd === "systemctl" ? { stdout: "active" } : undefined));
   const r = await pickEngine(exec, "iptables");
   expect("engine" in r && r.engine.id).toBe("iptables");
+});
+
+// The order of the rules is the safety contract; it lives in rules.ts, so one fake format is enough to pin it for all three engines.
+test("rule order: failsafe, baseline, denied IPs, accepted IPs, denied ports, accepted ports, closing", () => {
+  const format: RuleFormat = {
+    failsafe: (ip) => `failsafe ${ip}`,
+    baseline: ["baseline"],
+    ipDeny: (ip) => `ip-deny ${ip}`,
+    ipAccept: (ip) => `ip-accept ${ip}`,
+    portDeny: ({ proto, range }) => `port-deny ${proto} ${range}`,
+    portAccept: ({ proto, range }) => `port-accept ${proto} ${range}`,
+    closing: ["closing"],
+  };
+  const rules = renderRules({ ipAccept: ["1.1.1.1"], ipDeny: ["2.2.2.2"], portAccept: ["53/udp"], portDeny: ["80/tcp"], failsafe: "9.9.9.9" }, format);
+  expect(rules).toEqual(["failsafe 9.9.9.9", "baseline", "ip-deny 2.2.2.2", "ip-accept 1.1.1.1", "port-deny tcp 80", "port-accept udp 53", "closing"]);
+  expect(renderRules({ ipAccept: [], ipDeny: [], portAccept: [], portDeny: [] }, format)).toEqual(["baseline", "closing"]); // no session, no failsafe
+});
+
+test("failsafeRule is the first rendered rule of every engine, and none is rendered without a session", () => {
+  const empty = { ipAccept: [], ipDeny: [], portAccept: [], portDeny: [] };
+  for (const engine of Object.values(ENGINES)) {
+    expect(engine.render({ ...empty, failsafe: "203.0.113.7" })[0]).toBe(engine.failsafeRule("203.0.113.7"));
+    expect(engine.render(empty)).not.toContain(engine.failsafeRule("203.0.113.7"));
+  }
 });
